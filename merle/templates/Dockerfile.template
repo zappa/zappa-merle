@@ -11,7 +11,8 @@ ENV PYTHONUNBUFFERED=1 \
     OLLAMA_URL=http://localhost:11434 \
     OLLAMA_MODELS=/var/task/models \
     OLLAMA_MODEL={{OLLAMA_MODEL}} \
-    LOG_LEVEL=INFO
+    LOG_LEVEL=INFO \
+    PATH="/var/task/bin:${PATH}"
 
 # uv environment variables for system-wide installation
 ENV UV_PROJECT_ENVIRONMENT=/var/lang/ \
@@ -23,14 +24,15 @@ ENV UV_PROJECT_ENVIRONMENT=/var/lang/ \
 RUN dnf install -y tar gzip ca-certificates procps git findutils || microdnf install -y tar gzip ca-certificates procps git findutils && \
     dnf clean all || microdnf clean all
 
-# Download and install Ollama binary manually
+# Download and install Ollama binary to /var/task/bin (required for Zappa ZIP deployment)
+# Zappa only packages files from /var/task/ when deploying as ZIP, so we must install here
 RUN curl -fsSL https://ollama.com/download/ollama-linux-amd64.tgz -o /tmp/ollama.tgz && \
-    mkdir -p /usr/local/bin && \
-    tar -xzf /tmp/ollama.tgz -C /usr/local && \
+    mkdir -p /var/task/bin && \
+    tar -xzf /tmp/ollama.tgz -C /var/task && \
     rm /tmp/ollama.tgz && \
-    chmod +x /usr/local/bin/ollama && \
-    ls -la /usr/local/bin/ollama && \
-    /usr/local/bin/ollama --version
+    chmod +x /var/task/bin/ollama && \
+    ls -la /var/task/bin/ollama && \
+    /var/task/bin/ollama --version
 
 # Install uv from official source
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/
@@ -47,7 +49,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Copy application code
 COPY merle/ ${FUNCTION_DIR}/merle/
 
-# Copy Zappa settings JSON
+# Copy authorizer and Zappa settings JSON
+COPY authorizer.py ${FUNCTION_DIR}/
 COPY zappa_settings.json ${FUNCTION_DIR}/
 RUN uv run zappa save-python-settings-file dev -o ${FUNCTION_DIR}/zappa_settings.py
 

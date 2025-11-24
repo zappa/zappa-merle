@@ -63,8 +63,9 @@ def start_ollama_server() -> subprocess.Popen | None:
 
         logger.info("Starting Ollama server...")
 
-        # Use absolute path to Ollama binary (Lambda doesn't always have /usr/local/bin in PATH)
-        ollama_binary = "/usr/local/bin/ollama"
+        # Use absolute path to Ollama binary in /var/task/bin (required for Zappa ZIP deployment)
+        # Zappa only packages files from /var/task/, so binary must be there
+        ollama_binary = "/var/task/bin/ollama"
         if not Path(ollama_binary).exists():
             logger.error(f"Ollama binary not found at {ollama_binary}")
             raise FileNotFoundError(f"Ollama binary not found at {ollama_binary}")  # noqa: TRY301

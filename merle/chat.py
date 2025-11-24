@@ -3,10 +3,49 @@
 import json
 import logging
 import sys
+import threading
+import time
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+class WaitingCursor:
+    """Simple waiting cursor that displays an animated spinner."""
+
+    def __init__(self) -> None:
+        """Initialize the waiting cursor."""
+        self.spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self.running = False
+        self.thread: threading.Thread | None = None
+
+    def _spin(self) -> None:
+        """Run the spinner animation."""
+        idx = 0
+        while self.running:
+            # Print spinner character and flush
+            sys.stdout.write(f"\r{self.spinner_chars[idx]} ")
+            sys.stdout.flush()
+            idx = (idx + 1) % len(self.spinner_chars)
+            time.sleep(0.1)
+        # Clear the spinner when done
+        sys.stdout.write("\r  \r")
+        sys.stdout.flush()
+
+    def start(self) -> None:
+        """Start the spinner."""
+        if not self.running:
+            self.running = True
+            self.thread = threading.Thread(target=self._spin, daemon=True)
+            self.thread.start()
+
+    def stop(self) -> None:
+        """Stop the spinner."""
+        if self.running:
+            self.running = False
+            if self.thread:
+                self.thread.join(timeout=0.5)
 
 
 class ChatClient:
@@ -26,12 +65,49 @@ class ChatClient:
         self.model = model
         self.conversation_history: list[dict[str, str]] = []
 
-    def _make_request(self, messages: list[dict[str, str]]) -> str:
+    def _process_stream_line(
+        self, line: str, spinner: WaitingCursor, first_content: bool, prompt: str | None = None
+    ) -> tuple[str, bool]:
+        """
+        Process a single line from the streaming response.
+
+        Args:
+            line: JSON line from the stream
+            spinner: WaitingCursor instance to stop on first content
+            first_content: Whether this is the first content received
+            prompt: Optional prompt to display before first content (e.g., "[model]: ")
+
+        Returns:
+            Tuple of (content, is_first_content)
+        """
+        try:
+            data = json.loads(line)
+            if "message" in data:
+                content = data["message"].get("content", "")
+                if content:
+                    # Stop spinner and show prompt on first content
+                    if first_content:
+                        spinner.stop()
+                        if prompt:
+                            print(prompt, end="", flush=True)
+                        first_content = False
+                    print(content, end="", flush=True)
+                    return content, first_content
+
+            if data.get("done", False):
+                return "", first_content
+        except json.JSONDecodeError:
+            logger.warning(f"Failed to decode JSON: {line}")
+
+        return "", first_content
+
+    def _make_request(self, messages: list[dict[str, str]], prompt: str | None = None) -> str:
         """
         Make a streaming request to the Ollama API.
 
         Args:
             messages: List of message dictionaries with 'role' and 'content'
+            prompt: Optional prompt to display before first content (e.g., "[model]: ")
 
         Returns:
             Complete response text
@@ -54,57 +130,71 @@ class ChatClient:
         logger.debug(f"Payload: {payload}")
 
         full_response = ""
+        spinner = WaitingCursor()
 
         try:
+            spinner.start()
             with httpx.Client(timeout=120.0) as client:
                 with client.stream("POST", url, json=payload, headers=headers) as response:
                     response.raise_for_status()
 
+                    first_content = True
                     for line in response.iter_lines():
                         if not line:
                             continue
 
-                        try:
-                            data = json.loads(line)
-                            if "message" in data:
-                                content = data["message"].get("content", "")
-                                if content:
-                                    print(content, end="", flush=True)
-                                    full_response += content
+                        content, first_content = self._process_stream_line(line, spinner, first_content, prompt)
+                        full_response += content
 
-                            if data.get("done", False):
+                        # Check if done
+                        try:
+                            if json.loads(line).get("done", False):
                                 break
                         except json.JSONDecodeError:
-                            logger.warning(f"Failed to decode JSON: {line}")
-                            continue
+                            pass
 
-                print()  # Newline after streaming response
+                spinner.stop()
                 return full_response
 
         except httpx.HTTPStatusError as e:
-            # For streaming responses, we need to read the content first
-            try:
-                error_body = e.response.read().decode("utf-8")
-            except (UnicodeDecodeError, AttributeError, OSError):
-                error_body = "<unable to read response body>"
+            spinner.stop()
+            error_body = self._extract_error_body(e)
             error_msg = f"HTTP error {e.response.status_code}: {error_body}"
             logger.error(error_msg)
             raise
         except httpx.ConnectError as e:
+            spinner.stop()
             error_msg = f"Connection error: {e}"
             logger.error(error_msg)
             raise
         except httpx.TimeoutException as e:
+            spinner.stop()
             error_msg = f"Request timeout: {e}"
             logger.error(error_msg)
             raise
 
-    def chat(self, user_message: str) -> str:
+    def _extract_error_body(self, error: httpx.HTTPStatusError) -> str:
+        """
+        Extract error body from HTTP error response.
+
+        Args:
+            error: HTTPStatusError from httpx
+
+        Returns:
+            Error body as string
+        """
+        try:
+            return error.response.read().decode("utf-8")
+        except (UnicodeDecodeError, AttributeError, OSError):
+            return "<unable to read response body>"
+
+    def chat(self, user_message: str, prompt: str | None = None) -> str:
         """
         Send a message and get a response.
 
         Args:
             user_message: User's message
+            prompt: Optional prompt to display before first content (e.g., "[model]: ")
 
         Returns:
             Assistant's response
@@ -113,7 +203,7 @@ class ChatClient:
         self.conversation_history.append({"role": "user", "content": user_message})
 
         # Get response
-        response = self._make_request(self.conversation_history)
+        response = self._make_request(self.conversation_history, prompt=prompt)
 
         # Add assistant response to history
         self.conversation_history.append({"role": "assistant", "content": response})
@@ -126,7 +216,7 @@ class ChatClient:
         logger.info("Conversation history reset")
 
 
-def run_interactive_chat(base_url: str, auth_token: str, model: str) -> None:
+def run_interactive_chat(base_url: str, auth_token: str, model: str, debug: bool = False) -> None:
     """
     Run an interactive chat session.
 
@@ -134,7 +224,19 @@ def run_interactive_chat(base_url: str, auth_token: str, model: str) -> None:
         base_url: Base URL of the deployed API
         auth_token: Authentication token
         model: Model name to use
+        debug: Show debug and info log messages if True
     """
+    # Configure logging level based on debug flag
+    if not debug:
+        # Suppress INFO and DEBUG messages during chat
+        logging.getLogger("merle").setLevel(logging.WARNING)
+        # Also suppress httpx logging
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+    else:
+        # Keep INFO level for debug mode
+        logging.getLogger("merle").setLevel(logging.INFO)
+        logging.getLogger("httpx").setLevel(logging.INFO)
+
     client = ChatClient(base_url, auth_token, model)
 
     # Display header with model information
@@ -151,7 +253,7 @@ def run_interactive_chat(base_url: str, auth_token: str, model: str) -> None:
     while True:
         try:
             # Get user input
-            user_input = input("\nYou: ").strip()
+            user_input = input("\n> ").strip()
 
             if not user_input:
                 continue
@@ -167,8 +269,8 @@ def run_interactive_chat(base_url: str, auth_token: str, model: str) -> None:
                 continue
 
             # Send message and get response
-            print(f"\n[{model}]: ", end="", flush=True)
-            client.chat(user_input)
+            client.chat(user_input, prompt=f"[{model}]: ")
+            print()  # Newline after response
 
         except KeyboardInterrupt:
             print("\n\nGoodbye!")

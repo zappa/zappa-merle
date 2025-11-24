@@ -1,5 +1,6 @@
 """Flask application for Ollama model server proxy."""
 
+import contextlib
 import logging
 from http import HTTPStatus
 from typing import Any
@@ -44,7 +45,7 @@ def health_check() -> tuple[dict[str, Any], int]:
 
 
 @app.route("/api/<path:path>", methods=["GET", "POST", "PUT", "DELETE"])
-def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:
+def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:  # noqa: C901, PLR0912, PLR0915
     """
     Proxy all /api/* requests to Ollama server.
 
@@ -68,38 +69,74 @@ def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:
 
         logger.info(f"Proxying {request.method} request to {target_url}")
 
-        # Make request to Ollama
-        with httpx.Client(timeout=settings.OLLAMA_REQUEST_TIMEOUT) as client:
+        # Check if client expects streaming response (from request body)
+        is_streaming_request = False
+        if data and isinstance(data, dict):
+            is_streaming_request = data.get("stream", False)
+
+        logger.info(f"Client requested streaming: {is_streaming_request}")
+
+        # Use httpx streaming to get chunks as they arrive from Ollama
+        # This ensures we start sending response to API Gateway immediately
+        client = httpx.Client(timeout=settings.OLLAMA_REQUEST_TIMEOUT)
+
+        try:
+            # Make streaming request to Ollama
+            logger.info(f"Creating stream request for {request.method}")
             if request.method == "GET":
-                response = client.get(target_url, params=params, headers=headers)
+                stream_response = client.stream("GET", target_url, params=params, headers=headers)
             elif request.method == "POST":
-                response = client.post(target_url, json=data, params=params, headers=headers)
+                stream_response = client.stream("POST", target_url, json=data, params=params, headers=headers)
             elif request.method == "PUT":
-                response = client.put(target_url, json=data, params=params, headers=headers)
+                stream_response = client.stream("PUT", target_url, json=data, params=params, headers=headers)
             elif request.method == "DELETE":
-                response = client.delete(target_url, params=params, headers=headers)
+                stream_response = client.stream("DELETE", target_url, params=params, headers=headers)
             else:
+                client.close()
                 return {"error": "Method not allowed"}, HTTPStatus.METHOD_NOT_ALLOWED
 
-            # Check if response is streaming (chunked)
-            content_type = response.headers.get("content-type", "")
-            if "stream" in content_type or "ndjson" in content_type:
+            # Enter the streaming context
+            logger.info("Entering streaming context...")
+            http_response = stream_response.__enter__()
+            logger.info(f"Got response with status {http_response.status_code}")
+
+            # Check if response is streaming (chunked) or if client requested streaming
+            content_type = http_response.headers.get("content-type", "")
+            should_stream = is_streaming_request or "stream" in content_type or "ndjson" in content_type
+
+            if should_stream:
+                logger.info("Streaming response from Ollama")
 
                 def generate():  # noqa: ANN202
-                    yield from response.iter_bytes()
+                    try:
+                        # Stream chunks as they arrive from Ollama
+                        yield from http_response.iter_bytes()
+                    finally:
+                        # Cleanup: exit stream context and close client
+                        stream_response.__exit__(None, None, None)
+                        client.close()
 
                 return Response(
                     stream_with_context(generate()),
-                    status=response.status_code,
-                    headers=dict(response.headers),
+                    status=http_response.status_code,
+                    headers=dict(http_response.headers),
                 )
 
-            # Return non-streaming response
-            return Response(
-                response.content,
-                status=response.status_code,
-                headers=dict(response.headers),
-            )
+            # Non-streaming response: read all content then cleanup
+            content = http_response.read()
+            response_headers = dict(http_response.headers)
+            status_code = http_response.status_code
+
+            stream_response.__exit__(None, None, None)
+            client.close()
+
+            return Response(content, status=status_code, headers=response_headers)
+
+        except Exception:  # noqa: BLE001
+            # Ensure client is closed on error
+            with contextlib.suppress(Exception):
+                client.close()
+            raise
 
     except httpx.TimeoutException:
         logger.exception("Request to Ollama timed out")

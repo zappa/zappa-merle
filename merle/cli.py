@@ -445,8 +445,8 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
 
         print("=" * 80 + "\n")
 
-        # Run zappa deploy from the model cache directory
-        cmd = ["zappa", "deploy", "dev"]
+        # Run zappa deploy from the model cache directory with Docker image URI
+        cmd = ["zappa", "deploy", "dev", "--docker-image-uri", image_uri]
         logger.info(f"Running: {' '.join(cmd)}")
         print(f"Deploying with Zappa: {' '.join(cmd)}")
 
@@ -770,7 +770,7 @@ def handle_chat(args: argparse.Namespace) -> int:
         logger.info(f"Using model: {model_name}, stage: {stage}")
 
         # Start interactive chat
-        run_interactive_chat(base_url=deployment_url, auth_token=auth_token, model=model_name)
+        run_interactive_chat(base_url=deployment_url, auth_token=auth_token, model=model_name, debug=args.debug)
 
         return 0
 
@@ -944,6 +944,11 @@ def main() -> int:
     chat_parser.add_argument(
         "--cache-dir",
         help="Base cache directory (default: ~/.merle)",
+    )
+    chat_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Show debug and info log messages during chat",
     )
     chat_parser.set_defaults(func=handle_chat)
 
