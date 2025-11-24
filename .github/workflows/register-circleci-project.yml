@@ -1,0 +1,17 @@
+
+name: Register CircleCI Project
+run-name: ${{ github.repository }} ciricleci project registration
+on:
+  push:
+    branches:
+      - main
+jobs:
+  Register-CircleCI-Project:
+    if: github.run_number == 1
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dkershner6/post-api-call-action@v2.0.1
+        with:
+          url: "https://circleci.com/api/v1.1/project/github/${{ github.repository }}/follow"
+          data: "{\"first_build\": \"true\"}"
+          headers: "{\"Circle-Token\": \"${{ secrets.CIRCLECI_API_KEY }}\"}"

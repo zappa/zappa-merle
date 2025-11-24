@@ -1,0 +1,25 @@
+{
+    "dev": {
+        "lambda_handler": "authorizer.lambda_handler",
+        "project_name": "merle-{{NORMALIZED_MODEL}}-authorizer",
+        "s3_bucket": "{{S3_BUCKET}}",
+        "aws_region": "{{AWS_REGION}}",
+        "environment_variables": {
+            "API_KEY": "{{AUTH_TOKEN}}"
+        },
+        "runtime": "python3.13",
+        "timeout_seconds": 10,
+        "memory_size": 128,
+        "keep_warm": false,
+        "exclude": [
+            "models/*",
+            "data/*",
+            "tests/*",
+            ".git/*",
+            "*.md",
+            "Dockerfile*",
+            ".dockerignore",
+            "merle/*"
+        ]
+    }
+}

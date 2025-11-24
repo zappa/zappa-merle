@@ -1,0 +1,188 @@
+[project]
+name = "merle"
+version = "0.1.0"
+description = "This project uses zappa/ollama to deploy ollama compatable models to AWS lambda"
+authors = [{ name = "monkut", email = "hakkoakkei@gmail.com" }]
+readme = "README.md"
+keywords = ['python']
+requires-python = ">=3.13,<3.14"
+classifiers = [
+    "Intended Audience :: Developers",
+    "Private :: Do Not Upload",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+license = "BSD-2-Clause"
+license-files = ["LICENSE"]
+
+
+dependencies = [
+    "flask>=3.1.0,<3.2.0",
+    "httpx>=0.28.1",
+    "zappa==0.61.1",
+]
+
+[project.urls]
+Repository = "https://github.com/zappa/zappa-merle"
+
+[project.scripts]
+merle = "merle.cli:main"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.396",
+    "ruff>=0.9.10",
+    "pytest>=8.3.5",
+    "poethepoet>=0.34.0",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]  # list of folders that contain the packages (["."] by default)
+include = ["merle"]  # package names should match these glob patterns (["*"] by default)
+exclude = []  # exclude packages matching these glob patterns (empty by default)
+
+# Task runner
+[tool.poe.tasks]
+check = "uv run ruff check"
+typecheck = "uv run pyright"
+
+create-project-bucket = "aws s3 mb s3://zappa-merle --region ${AWS_DEFAULT_REGION}"
+get-project-data = "aws s3 cp s3://zappa-merle/ ./data --recursive"
+put-project-data = "aws s3 cp ./data s3://zappa-merle/ --recursive"
+
+
+[tool.poe.tasks.test]
+# run the test command in a shell
+shell = "mkdir test-reports || true && uv run pytest -v tests/ --junitxml=test-reports/junit.xml"
+
+
+[tool.pyright]
+include = ["merle", "notebooks"]
+exclude = ["**/.venv", "tmp/", "**/node_modules/", "**/__pycache__", "**/*.pyc", "tests/"]
+typeCheckingMode = "basic"
+pythonVersion = "3.13"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+log_cli = 1
+markers = [
+    "docker: marks tests as requiring Docker (deselect with '-m \"not docker\"')",
+]
+
+[tool.ruff]
+line-length = 120
+indent-width = 4
+target-version ='py313'
+exclude = [".git", ".venv", "**/node_modules/", "**/.volta", "jupyter/*"]
+fix = true
+respect-gitignore = true
+unsafe-fixes = false
+
+[tool.ruff.lint]
+select = ["ALL"]
+extend-safe-fixes = [
+    "D200",  # unnecessary-multiline-docstring
+    "ANN204"  # missing-return-type-special-method (__init__)
+]
+ignore = [
+    "A005",
+    "ANN002",
+    "ANN003",
+    "ANN201",
+    "ARG002",
+    "ARG003",
+    "C401",  # rewrite as a set comprehension
+    "COM812",
+    "COM819",
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D105",
+    "D106",
+    "D107",
+    "D203",
+    "D205",
+    "D206",
+    "D213",
+    "D300",
+    "D400",
+    "D401",
+    "D415",
+    "DTZ005",
+    "E111",
+    "E114",
+    "E117",
+    "EM101",
+    "EM102",
+    "ERA001",
+    "EXE002",  # file is executable but no shebang is present
+    "FBT",
+    "FIX002",
+    "G004",
+    "INP001",
+    "ISC001",
+    "ISC002",
+    "PERF401",  # Use `list.extend` to create a transformed list
+    "PLR0913",
+    "PT009",
+    "PT011",
+    "Q000",
+    "Q001",
+    "Q002",
+    "Q003",
+    "RET504",
+    "RUF",
+    "S101",
+    "SIM108",  # if-else-block-instead-of-if-exp
+    "SIM118",  # Use `key in dict` instead of `key in dict.keys()`
+    "SLF001",
+    "TC001",
+    "TC002",
+    "TD002",  # missing-todo-author
+    "TD003",
+    "TID252",
+    "TRY003",
+]
+
+exclude = ["target", "tmp", "data", "notebooks", "migrations"]
+
+# Allow fix for all enabled rules (when `--fix`) is provided.
+fixable = ["ALL"]
+unfixable = []
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.extend-per-file-ignores]
+"**/__init__.py" = ["I", "F403"]
+"**/cli.py" = ["T201", "TRY300", "TRY400", "TRY401", "PLC0415", "S603", "PLR0911", "PLR0915"]
+"**/chat.py" = ["T201", "TRY400", "TRY401"]
+"**/functions.py" = ["PLR2004", "TRY300", "TRY301", "TRY400", "TRY401", "B904"]
+"tests/**" = ["S105", "S106", "PLR2004", "FLY002", "ANN202", "ARG001", "F841"]
+
+[tool.ruff.lint.mccabe]
+# Flag errors (`C901`) whenever the complexity level exceeds this value.
+max-complexity = 13
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+split-on-trailing-comma = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

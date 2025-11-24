@@ -1,0 +1,145 @@
+"""Flask application for Ollama model server proxy."""
+
+import logging
+from http import HTTPStatus
+from typing import Any
+
+import httpx
+from flask import Flask, Response, request, stream_with_context
+from werkzeug.exceptions import HTTPException
+
+from merle import settings
+from merle.init_ollama import get_or_initialize
+
+# Configure logging
+logging.basicConfig(
+    level=getattr(logging, settings.LOG_LEVEL),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+# Initialize Flask app
+app = Flask(__name__)
+
+# Initialize Ollama server on app startup (for Lambda cold start)
+logger.info("Initializing Ollama server...")
+if not get_or_initialize():
+    logger.error("Failed to initialize Ollama server")
+else:
+    logger.info("Ollama server initialized successfully")
+
+
+@app.route("/health", methods=["GET"])
+def health_check() -> tuple[dict[str, Any], int]:
+    """Health check endpoint."""
+    try:
+        # Check if Ollama is responding
+        response = httpx.get(f"{settings.OLLAMA_URL}/api/tags", timeout=5.0)
+        if response.status_code == HTTPStatus.OK:
+            return {"status": "healthy", "model": settings.OLLAMA_MODEL}, HTTPStatus.OK
+    except Exception:
+        logger.exception("Health check failed")
+
+    return {"status": "unhealthy", "error": "Internal error"}, HTTPStatus.SERVICE_UNAVAILABLE
+
+
+@app.route("/api/<path:path>", methods=["GET", "POST", "PUT", "DELETE"])
+def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:
+    """
+    Proxy all /api/* requests to Ollama server.
+
+    Supports both streaming and non-streaming responses.
+    """
+    try:
+        target_url = f"{settings.OLLAMA_URL}/api/{path}"
+
+        # Get request data
+        data = None
+        if request.method in ["POST", "PUT"]:
+            data = request.get_json(silent=True)
+
+        # Get query parameters
+        params = request.args.to_dict()
+
+        # Forward headers (excluding host)
+        headers = {
+            key: value for key, value in request.headers.items() if key.lower() not in ["host", "content-length"]
+        }
+
+        logger.info(f"Proxying {request.method} request to {target_url}")
+
+        # Make request to Ollama
+        with httpx.Client(timeout=settings.OLLAMA_REQUEST_TIMEOUT) as client:
+            if request.method == "GET":
+                response = client.get(target_url, params=params, headers=headers)
+            elif request.method == "POST":
+                response = client.post(target_url, json=data, params=params, headers=headers)
+            elif request.method == "PUT":
+                response = client.put(target_url, json=data, params=params, headers=headers)
+            elif request.method == "DELETE":
+                response = client.delete(target_url, params=params, headers=headers)
+            else:
+                return {"error": "Method not allowed"}, HTTPStatus.METHOD_NOT_ALLOWED
+
+            # Check if response is streaming (chunked)
+            content_type = response.headers.get("content-type", "")
+            if "stream" in content_type or "ndjson" in content_type:
+
+                def generate():  # noqa: ANN202
+                    yield from response.iter_bytes()
+
+                return Response(
+                    stream_with_context(generate()),
+                    status=response.status_code,
+                    headers=dict(response.headers),
+                )
+
+            # Return non-streaming response
+            return Response(
+                response.content,
+                status=response.status_code,
+                headers=dict(response.headers),
+            )
+
+    except httpx.TimeoutException:
+        logger.exception("Request to Ollama timed out")
+        return {"error": "Request timed out"}, HTTPStatus.GATEWAY_TIMEOUT
+    except httpx.ConnectError:
+        logger.exception("Failed to connect to Ollama")
+        return {"error": "Ollama server not available"}, HTTPStatus.SERVICE_UNAVAILABLE
+    except Exception:
+        logger.exception("Error proxying request")
+        return {"error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR
+
+
+@app.route("/", methods=["GET"])
+def root() -> tuple[dict[str, Any], int]:
+    """Root endpoint with service information."""
+    return {
+        "service": "merle-ollama-proxy",
+        "description": "Ollama REST API proxy for AWS Lambda",
+        "model": settings.OLLAMA_MODEL,
+        "endpoints": {
+            "/health": "Health check",
+            "/api/*": "Ollama API (proxied)",
+        },
+    }, HTTPStatus.OK
+
+
+@app.errorhandler(HTTPStatus.NOT_FOUND)
+def not_found(_error: HTTPException) -> tuple[dict[str, str], int]:
+    """Handle 404 errors."""
+    return {"error": "Endpoint not found. Use /api/* for Ollama API."}, HTTPStatus.NOT_FOUND
+
+
+@app.errorhandler(HTTPStatus.INTERNAL_SERVER_ERROR)
+def internal_error(_error: HTTPException) -> tuple[dict[str, str], int]:
+    """Handle 500 errors."""
+    logger.exception("Internal server error")
+    return {"error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR
+
+
+if __name__ == "__main__":
+    # For local development only - not used in production Lambda deployment
+    # The 0.0.0.0 binding and debug mode are acceptable for local dev
+    app.run(host="0.0.0.0", port=8080, debug=True)  # noqa: S104, S201

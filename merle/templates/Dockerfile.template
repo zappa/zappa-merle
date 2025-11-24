@@ -1,0 +1,80 @@
+# AWS Lambda-compatible Dockerfile for Ollama Model Server
+FROM public.ecr.aws/lambda/python:3.13
+
+ARG FUNCTION_DIR="/var/task/"
+
+# Set environment variables for Lambda and Ollama
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    ZAPPA_RUNNING_IN_DOCKER=True \
+    OLLAMA_HOST=http://localhost:11434 \
+    OLLAMA_URL=http://localhost:11434 \
+    OLLAMA_MODELS=/var/task/models \
+    OLLAMA_MODEL={{OLLAMA_MODEL}} \
+    LOG_LEVEL=INFO
+
+# uv environment variables for system-wide installation
+ENV UV_PROJECT_ENVIRONMENT=/var/lang/ \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+# AWS Lambda uses dnf/microdnf instead of apt-get
+# Install system dependencies (curl already installed, skip to avoid conflicts)
+RUN dnf install -y tar gzip ca-certificates procps git findutils || microdnf install -y tar gzip ca-certificates procps git findutils && \
+    dnf clean all || microdnf clean all
+
+# Download and install Ollama binary manually
+RUN curl -fsSL https://ollama.com/download/ollama-linux-amd64.tgz -o /tmp/ollama.tgz && \
+    mkdir -p /usr/local/bin && \
+    tar -xzf /tmp/ollama.tgz -C /usr/local && \
+    rm /tmp/ollama.tgz && \
+    chmod +x /usr/local/bin/ollama && \
+    ls -la /usr/local/bin/ollama && \
+    /usr/local/bin/ollama --version
+
+# Install uv from official source
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/
+
+# Copy dependency files
+COPY pyproject.toml uv.lock ${FUNCTION_DIR}
+
+WORKDIR ${FUNCTION_DIR}
+
+# Install Python dependencies using uv
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --inexact
+
+# Copy application code
+COPY merle/ ${FUNCTION_DIR}/merle/
+
+# Copy Zappa settings JSON
+COPY zappa_settings.json ${FUNCTION_DIR}/
+RUN uv run zappa save-python-settings-file dev -o ${FUNCTION_DIR}/zappa_settings.py
+
+# Create models directory
+RUN mkdir -p /var/task/models && chmod 777 /var/task/models
+
+# Pre-download the Ollama model to bake into our image
+# This increases image size significantly (~2GB+) but improves performance
+# Note: 'ollama pull' requires a running ollama server, so we start a temporary
+# server during the build, pull the model, then kill it. The actual Lambda function
+# will start its own ollama server at runtime.
+RUN ollama serve & \
+    OLLAMA_PID=$! && \
+    echo "Waiting for Ollama server to start..." && \
+    sleep 10 && \
+    echo "Pulling model: ${OLLAMA_MODEL}" && \
+    ollama pull ${OLLAMA_MODEL} && \
+    echo "Model pulled successfully" && \
+    kill -9 ${OLLAMA_PID} 2>/dev/null || true && \
+    sleep 2
+
+# Extract Zappa handler and place it in the working directory
+RUN ZAPPA_HANDLER_PATH=$( \
+    python -c "from zappa import handler; print(handler.__file__)" \
+    ) && \
+    echo "Copying Zappa handler from: $ZAPPA_HANDLER_PATH" && \
+    cp $ZAPPA_HANDLER_PATH ${FUNCTION_DIR}
+
+# Lambda handler entry point
+CMD ["handler.lambda_handler"]
