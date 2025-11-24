@@ -184,9 +184,11 @@ class ChatClient:
             Error body as string
         """
         try:
-            return error.response.read().decode("utf-8")
-        except (UnicodeDecodeError, AttributeError, OSError):
-            return "<unable to read response body>"
+            # Try to get text property first (cached if already read)
+            return error.response.text
+        except (UnicodeDecodeError, AttributeError, OSError, httpx.StreamClosed):
+            # If stream is closed or can't be read, return generic message
+            return f"<unable to read response body - status {error.response.status_code}>"
 
     def chat(self, user_message: str, prompt: str | None = None) -> str:
         """

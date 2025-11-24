@@ -378,6 +378,7 @@ def _generate_zappa_settings(
     auth_token: str,
     authorizer_arn: str | None = None,
     stage: str = "dev",
+    memory_size: int = 8192,
 ) -> None:
     """
     Generate zappa_settings.json using Zappa's Python API.
@@ -391,6 +392,7 @@ def _generate_zappa_settings(
         auth_token: Authentication token for API access
         authorizer_arn: Optional ARN of the authorizer Lambda function
         stage: Zappa deployment stage (default: 'dev')
+        memory_size: Lambda function memory size in MB (default: 8192)
     """
     from zappa.cli import ZappaCLI  # noqa: PLC0415
 
@@ -428,7 +430,7 @@ def _generate_zappa_settings(
             "project_name": f"merle-{normalized_model}",
             "s3_bucket": s3_bucket,
             "aws_region": aws_region,
-            "memory_size": 10240,
+            "memory_size": memory_size,
             "timeout_seconds": 900,
             "environment_variables": {
                 "OLLAMA_MODEL": model_name,
@@ -465,6 +467,7 @@ def prepare_deployment_files(
     tags: dict[str, str] | None = None,
     s3_bucket: str | None = None,
     stage: str = "dev",
+    memory_size: int = 8192,
 ) -> Path:
     """
     Prepare all necessary files for deployment.
@@ -477,6 +480,7 @@ def prepare_deployment_files(
         tags: Optional AWS resource tags as key-value pairs
         s3_bucket: Optional S3 bucket name for Zappa deployment (generated if not provided)
         stage: Deployment stage (default: 'dev')
+        memory_size: Lambda function memory size in MB (default: 8192)
 
     Returns:
         Path to the model-stage-specific cache directory where files were created
@@ -550,6 +554,7 @@ def prepare_deployment_files(
         s3_bucket=s3_bucket,
         auth_token=auth_token,
         authorizer_arn=None,  # Will be updated after authorizer deployment
+        memory_size=memory_size,
     )
 
     # Copy pyproject.toml

@@ -150,7 +150,7 @@ class TestConfigFunctions:
     def test_get_model_cache_dir(self, temp_cache_dir: Path):
         """Test getting model-specific cache directory."""
         model_dir = get_model_cache_dir(temp_cache_dir, "schroneko/gemma-2-2b-jpn-it")
-        assert model_dir == temp_cache_dir / "schroneko_gemma_2_2b_jpn_it"
+        assert model_dir == temp_cache_dir / "dev" / "schroneko_gemma_2_2b_jpn_it"
 
     def test_update_model_config_new_model(self, temp_cache_dir: Path):
         """Test updating config for a new model."""
@@ -163,9 +163,9 @@ class TestConfigFunctions:
 
         config = load_config(temp_cache_dir)
         assert "llama2" in config["models"]
-        assert config["models"]["llama2"]["auth_token"] == "token123"
-        assert config["models"]["llama2"]["region"] == "us-east-1"
-        assert config["models"]["llama2"]["normalized_name"] == "llama2"
+        assert config["models"]["llama2"]["dev"]["auth_token"] == "token123"
+        assert config["models"]["llama2"]["dev"]["region"] == "us-east-1"
+        assert config["models"]["llama2"]["dev"]["normalized_name"] == "llama2"
 
     def test_update_model_config_with_tags(self, temp_cache_dir: Path, sample_tags: dict):
         """Test updating config with tags."""
@@ -176,7 +176,7 @@ class TestConfigFunctions:
         )
 
         config = load_config(temp_cache_dir)
-        assert config["models"]["llama2"]["tags"] == sample_tags
+        assert config["models"]["llama2"]["dev"]["tags"] == sample_tags
 
     def test_update_model_config_existing_model(self, temp_cache_dir: Path, sample_config: dict):
         """Test updating config for existing model."""
@@ -189,7 +189,7 @@ class TestConfigFunctions:
         )
 
         config = load_config(temp_cache_dir)
-        assert config["models"]["llama2"]["auth_token"] == "new-token"
+        assert config["models"]["llama2"]["dev"]["auth_token"] == "new-token"
 
 
 class TestValidateOllamaModel:
@@ -330,7 +330,7 @@ class TestGenerateZappaSettings:
         assert dev_config["project_name"] == "merle-llama2"  # Uses normalized model name
         assert dev_config["s3_bucket"] == "test-zappa-bucket"
         assert dev_config["aws_region"] == "us-east-1"
-        assert dev_config["memory_size"] == 10240
+        assert dev_config["memory_size"] == 8192
         assert dev_config["timeout_seconds"] == 900
 
         # Verify environment variables
@@ -410,8 +410,8 @@ class TestPrepareDeploymentFiles:
         # Verify config was updated
         config = load_config(temp_cache_dir)
         assert "llama2" in config["models"]
-        assert config["models"]["llama2"]["auth_token"] == "test-token"
-        assert config["models"]["llama2"]["region"] == "us-east-1"
+        assert config["models"]["llama2"]["dev"]["auth_token"] == "test-token"
+        assert config["models"]["llama2"]["dev"]["region"] == "us-east-1"
 
     @patch("merle.functions.validate_ollama_model")
     def test_prepare_deployment_files_with_tags(
@@ -438,7 +438,7 @@ class TestPrepareDeploymentFiles:
 
         # Verify config contains tags
         config = load_config(temp_cache_dir)
-        assert config["models"]["llama2"]["tags"] == sample_tags
+        assert config["models"]["llama2"]["dev"]["tags"] == sample_tags
 
     @patch("merle.functions.validate_ollama_model")
     def test_prepare_deployment_files_without_tags(self, mock_validate: MagicMock, temp_cache_dir: Path):
@@ -461,7 +461,7 @@ class TestPrepareDeploymentFiles:
 
         # Verify config doesn't have tags key
         config = load_config(temp_cache_dir)
-        assert "tags" not in config["models"]["llama2"]
+        assert "tags" not in config["models"]["llama2"]["dev"]
 
     @patch("merle.functions.validate_ollama_model")
     def test_prepare_deployment_files_invalid_model(self, mock_validate: MagicMock, temp_cache_dir: Path):

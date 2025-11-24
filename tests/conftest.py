@@ -32,19 +32,23 @@ def sample_config() -> dict:
     return {
         "models": {
             "llama2": {
-                "normalized_name": "llama2",
-                "cache_dir": "llama2",
-                "auth_token": "test-token-123",
-                "region": "us-east-1",
-                "last_updated": "2025-01-01T00:00:00Z",
+                "dev": {
+                    "normalized_name": "llama2",
+                    "cache_dir": "dev/llama2",
+                    "auth_token": "test-token-123",
+                    "region": "us-east-1",
+                    "last_updated": "2025-01-01T00:00:00Z",
+                }
             },
             "mistral": {
-                "normalized_name": "mistral",
-                "cache_dir": "mistral",
-                "auth_token": "test-token-456",
-                "region": "us-west-2",
-                "tags": {"Environment": "dev", "Project": "test"},
-                "last_updated": "2025-01-01T00:00:00Z",
+                "dev": {
+                    "normalized_name": "mistral",
+                    "cache_dir": "dev/mistral",
+                    "auth_token": "test-token-456",
+                    "region": "us-west-2",
+                    "tags": {"Environment": "dev", "Project": "test"},
+                    "last_updated": "2025-01-01T00:00:00Z",
+                }
             },
         }
     }

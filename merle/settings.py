@@ -37,6 +37,11 @@ ZAPPA_RUNNING_IN_DOCKER = os.getenv("ZAPPA_RUNNING_IN_DOCKER", "False").lower() 
 OLLAMA_STARTUP_TIMEOUT = int(os.getenv("OLLAMA_STARTUP_TIMEOUT", "30"))
 OLLAMA_REQUEST_TIMEOUT = float(os.getenv("OLLAMA_REQUEST_TIMEOUT", "300.0"))
 
+# Lambda Configuration Limits
+LAMBDA_MEMORY_SIZE_MIN = 128  # MB - AWS Lambda minimum
+LAMBDA_MEMORY_SIZE_MAX = 10240  # MB (10 GB) - AWS Lambda maximum
+LAMBDA_MEMORY_SIZE_DEFAULT = 8192  # MB (8 GB) - Default memory allocation for 7B models
+
 
 def get_models_path() -> Path:
     """Get the models directory as a Path object."""
@@ -52,3 +57,26 @@ def is_local_ollama() -> bool:
 def is_lambda() -> bool:
     """Check if running in AWS Lambda environment."""
     return AWS_LAMBDA_FUNCTION_NAME is not None
+
+
+def validate_lambda_memory_size(memory_size: int) -> None:
+    """
+    Validate Lambda memory size is within AWS limits.
+
+    Args:
+        memory_size: Memory size in MB
+
+    Raises:
+        TypeError: If memory size is not an integer
+        ValueError: If memory size is outside valid range
+    """
+    if not isinstance(memory_size, int):
+        error_msg = f"Memory size must be an integer, got {type(memory_size).__name__}"
+        raise TypeError(error_msg)
+
+    if memory_size < LAMBDA_MEMORY_SIZE_MIN or memory_size > LAMBDA_MEMORY_SIZE_MAX:
+        error_msg = (
+            f"Lambda memory size must be between {LAMBDA_MEMORY_SIZE_MIN} MB and {LAMBDA_MEMORY_SIZE_MAX} MB. "
+            f"Got: {memory_size} MB"
+        )
+        raise ValueError(error_msg)

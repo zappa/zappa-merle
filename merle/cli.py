@@ -22,7 +22,14 @@ from merle.functions import (
     prepare_deployment_files,
     save_config,
 )
-from merle.settings import REGION, STAGE
+from merle.settings import (
+    LAMBDA_MEMORY_SIZE_DEFAULT,
+    LAMBDA_MEMORY_SIZE_MAX,
+    LAMBDA_MEMORY_SIZE_MIN,
+    REGION,
+    STAGE,
+    validate_lambda_memory_size,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +118,15 @@ def handle_prepare_dockerfile(args: argparse.Namespace) -> int:  # noqa: C901, P
         logger.info(f"Preparing deployment files for model: {args.model}, stage: {stage}")
         logger.info(f"Cache directory: {cache_dir}")
 
+        # Validate memory size
+        try:
+            validate_lambda_memory_size(args.memory_size)
+            logger.info(f"Lambda memory size: {args.memory_size} MB")
+        except ValueError as e:
+            logger.error(f"Invalid memory size: {e}")
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+
         # Parse tags if provided
         tags = None
         if args.tags:
@@ -193,6 +209,7 @@ def handle_prepare_dockerfile(args: argparse.Namespace) -> int:  # noqa: C901, P
             tags=tags,
             s3_bucket=s3_bucket,
             stage=stage,
+            memory_size=args.memory_size,
         )
 
         # Display the auth token if it was newly generated
@@ -266,6 +283,15 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
             logger.info(f"Deployment files not found. Preparing model: {model_name}")
             print(f"Preparing deployment files for model: {model_name}...")
 
+            # Validate memory size
+            try:
+                validate_lambda_memory_size(args.memory_size)
+                logger.info(f"Lambda memory size: {args.memory_size} MB")
+            except ValueError as e:
+                logger.error(f"Invalid memory size: {e}")
+                print(f"Error: {e}", file=sys.stderr)
+                return 1
+
             # Parse tags if provided
             tags = None
             if args.tags:
@@ -298,6 +324,7 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
                     tags=tags,
                     s3_bucket=s3_bucket,
                     stage=stage,
+                    memory_size=args.memory_size,
                 )
 
                 # Display the auth token if it was newly generated
@@ -839,6 +866,13 @@ def main() -> int:
         default=STAGE,
         help=f"Deployment stage (default: {STAGE})",
     )
+    prepare_parser.add_argument(
+        "--memory-size",
+        type=int,
+        default=LAMBDA_MEMORY_SIZE_DEFAULT,
+        help=f"Lambda function memory size in MB (default: {LAMBDA_MEMORY_SIZE_DEFAULT}, "
+        f"min: {LAMBDA_MEMORY_SIZE_MIN}, max: {LAMBDA_MEMORY_SIZE_MAX})",
+    )
     prepare_parser.set_defaults(func=handle_prepare_dockerfile)
 
     # deploy command
@@ -875,6 +909,13 @@ def main() -> int:
         "--stage",
         default=STAGE,
         help=f"Deployment stage (default: {STAGE})",
+    )
+    deploy_parser.add_argument(
+        "--memory-size",
+        type=int,
+        default=LAMBDA_MEMORY_SIZE_DEFAULT,
+        help=f"Lambda function memory size in MB (default: {LAMBDA_MEMORY_SIZE_DEFAULT}, "
+        f"min: {LAMBDA_MEMORY_SIZE_MIN}, max: {LAMBDA_MEMORY_SIZE_MAX}, only used if auto-preparing)",
     )
     deploy_parser.set_defaults(func=handle_deploy)
 

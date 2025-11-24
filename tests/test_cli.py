@@ -93,6 +93,8 @@ class TestHandlePrepareDockerfile:
             cache_dir=None,
             tags=None,
             s3_bucket=None,
+            stage="dev",
+            memory_size=8192,
         )
 
         result = handle_prepare_dockerfile(args)
@@ -105,6 +107,8 @@ class TestHandlePrepareDockerfile:
             aws_region="us-east-1",
             tags=None,
             s3_bucket="zappa-merle-12345678",
+            stage="dev",
+            memory_size=8192,
         )
 
     @patch("merle.cli.prepare_deployment_files")
@@ -136,6 +140,8 @@ class TestHandlePrepareDockerfile:
             cache_dir=None,
             tags="Environment=dev,Project=ollama",
             s3_bucket=None,
+            stage="dev",
+            memory_size=8192,
         )
 
         result = handle_prepare_dockerfile(args)
@@ -149,6 +155,8 @@ class TestHandlePrepareDockerfile:
             aws_region="us-east-1",
             tags=sample_tags,
             s3_bucket="zappa-merle-87654321",
+            stage="dev",
+            memory_size=8192,
         )
 
     @patch("merle.cli.prepare_deployment_files")
@@ -171,6 +179,8 @@ class TestHandlePrepareDockerfile:
             region="us-east-1",
             cache_dir=None,
             tags="invalid-tag-format",
+            stage="dev",
+            memory_size=8192,
         )
 
         result = handle_prepare_dockerfile(args)
@@ -196,6 +206,9 @@ class TestHandlePrepareDockerfile:
             region="us-east-1",
             cache_dir=str(custom_cache),
             tags=None,
+            s3_bucket=None,
+            stage="dev",
+            memory_size=8192,
         )
 
         result = handle_prepare_dockerfile(args)
@@ -226,6 +239,8 @@ class TestHandlePrepareDockerfile:
             cache_dir=None,
             tags=None,
             s3_bucket="my-custom-bucket",
+            stage="dev",
+            memory_size=8192,
         )
 
         result = handle_prepare_dockerfile(args)
@@ -238,6 +253,8 @@ class TestHandlePrepareDockerfile:
             aws_region="us-east-1",
             tags=None,
             s3_bucket="my-custom-bucket",
+            stage="dev",
+            memory_size=8192,
         )
 
     @patch("merle.cli.get_model_cache_dir")
@@ -272,6 +289,8 @@ class TestHandlePrepareDockerfile:
             cache_dir=None,
             tags=None,
             s3_bucket="different-bucket",  # Trying to change bucket
+            stage="dev",
+            memory_size=8192,
         )
 
         result = handle_prepare_dockerfile(args)
@@ -313,6 +332,8 @@ class TestHandlePrepareDockerfile:
             cache_dir=None,
             tags=None,
             s3_bucket="existing-bucket",  # Same bucket
+            stage="dev",
+            memory_size=8192,
         )
 
         result = handle_prepare_dockerfile(args)
@@ -325,6 +346,8 @@ class TestHandlePrepareDockerfile:
             aws_region="us-east-1",
             tags=None,
             s3_bucket="existing-bucket",
+            stage="dev",
+            memory_size=8192,
         )
 
     @patch("merle.cli.prepare_deployment_files")
@@ -362,6 +385,8 @@ class TestHandlePrepareDockerfile:
             cache_dir=None,
             tags=None,
             s3_bucket=None,  # Not specified
+            stage="dev",
+            memory_size=8192,
         )
 
         result = handle_prepare_dockerfile(args)
@@ -374,6 +399,8 @@ class TestHandlePrepareDockerfile:
             aws_region="us-east-1",
             tags=None,
             s3_bucket="existing-bucket",  # Should reuse existing
+            stage="dev",
+            memory_size=8192,
         )
 
 
@@ -443,6 +470,7 @@ class TestHandleDeploy:
             region="us-east-1",
             cache_dir=None,
             tags=None,
+            stage="dev",
         )
 
         result = handle_deploy(args)
@@ -519,6 +547,9 @@ class TestHandleDeploy:
             region="us-east-1",
             cache_dir=None,
             tags=None,
+            s3_bucket=None,
+            stage="dev",
+            memory_size=8192,
         )
 
         result = handle_deploy(args)
@@ -546,6 +577,9 @@ class TestHandleDeploy:
             region="us-east-1",
             cache_dir=None,
             tags=None,
+            s3_bucket=None,
+            stage="dev",
+            memory_size=8192,
         )
 
         result = handle_deploy(args)
@@ -679,6 +713,7 @@ class TestHandleDestroy:
             model="llama2",
             cache_dir=None,
             yes=False,
+            stage="dev",
         )
 
         result = handle_destroy(args)
@@ -714,6 +749,7 @@ class TestHandleDestroy:
             model="llama2",
             cache_dir=None,
             yes=True,
+            stage="dev",
         )
 
         result = handle_destroy(args)
@@ -742,6 +778,7 @@ class TestHandleDestroy:
             model="llama2",
             cache_dir=None,
             yes=True,
+            stage="dev",
         )
 
         result = handle_destroy(args)
@@ -775,10 +812,10 @@ class TestHandleDestroy:
 
         # Create config file
         config_file = temp_cache_dir / "config.json"
-        config_file.write_text('{"models": {"llama2": {"region": "us-east-1"}}}')
+        config_file.write_text('{"models": {"llama2": {"dev": {"region": "us-east-1"}}}}')
 
         mock_get_cache.return_value = model_cache_dir
-        mock_load_config.return_value = {"models": {"llama2": {"region": "us-east-1"}}}
+        mock_load_config.return_value = {"models": {"llama2": {"dev": {"region": "us-east-1"}}}}
 
         # Simulate zappa undeploy failure (e.g., no AWS resources)
         mock_subprocess.return_value = MagicMock(returncode=1)
@@ -787,6 +824,7 @@ class TestHandleDestroy:
             model="llama2",
             cache_dir=None,
             yes=True,
+            stage="dev",
         )
 
         result = handle_destroy(args)
@@ -839,6 +877,8 @@ class TestHandleChat:
         args = argparse.Namespace(
             model="llama2",
             cache_dir=None,
+            stage="dev",
+            debug=False,
         )
 
         result = handle_chat(args)
@@ -848,6 +888,7 @@ class TestHandleChat:
             base_url="https://example.execute-api.us-east-1.amazonaws.com",
             auth_token="test-token-123",
             model="llama2",
+            debug=False,
         )
 
     @patch("merle.cli.get_model_cache_dir")
@@ -870,6 +911,7 @@ class TestHandleChat:
         args = argparse.Namespace(
             model="llama2",
             cache_dir=None,
+            stage="dev",
         )
 
         result = handle_chat(args)
@@ -902,6 +944,7 @@ class TestHandleChat:
         args = argparse.Namespace(
             model="llama2",
             cache_dir=None,
+            stage="dev",
         )
 
         result = handle_chat(args)
@@ -932,11 +975,12 @@ class TestHandleChat:
 
         mock_get_cache.return_value = model_cache_dir
         mock_get_url.return_value = "https://example.execute-api.us-east-1.amazonaws.com"
-        mock_load_config.return_value = {"models": {"llama2": {}}}  # No auth_token
+        mock_load_config.return_value = {"models": {"llama2": {"dev": {}}}}  # No auth_token
 
         args = argparse.Namespace(
             model="llama2",
             cache_dir=None,
+            stage="dev",
         )
 
         result = handle_chat(args)

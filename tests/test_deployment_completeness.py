@@ -22,13 +22,16 @@ class TestDeploymentCompleteness:
             region="us-east-1",
             cache_dir=str(temp_cache_dir),
             tags=None,
+            stage="dev",
+            memory_size=8192,
+            s3_bucket=None,
         )
 
         result = handle_prepare_dockerfile(args)
         assert result == 0
 
         # Verify expected files were created
-        model_dir = temp_cache_dir / "llama2"
+        model_dir = temp_cache_dir / "dev" / "llama2"
         assert model_dir.exists(), "Model directory should be created"
 
         expected_files = [
@@ -59,12 +62,15 @@ class TestDeploymentCompleteness:
             region="us-east-1",
             cache_dir=str(temp_cache_dir),
             tags=None,
+            stage="dev",
+            memory_size=8192,
+            s3_bucket=None,
         )
 
         result = handle_prepare_dockerfile(args)
         assert result == 0, "Prepare command should succeed"
 
-        model_dir = temp_cache_dir / "llama2"
+        model_dir = temp_cache_dir / "dev" / "llama2"
         project_root = Path(__file__).parent.parent
 
         # Verify all components are now present
@@ -158,11 +164,14 @@ class TestDockerBuildWouldFail:
             region="us-east-1",
             cache_dir=str(temp_cache_dir),
             tags=None,
+            stage="dev",
+            memory_size=8192,
+            s3_bucket=None,
         )
 
         handle_prepare_dockerfile(args)
 
-        model_dir = temp_cache_dir / "llama2"
+        model_dir = temp_cache_dir / "dev" / "llama2"
         dockerfile_path = model_dir / "Dockerfile"
 
         # Read Dockerfile and identify what it expects

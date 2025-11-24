@@ -79,12 +79,15 @@ def deployment_files(tmp_path_factory: Any) -> dict[str, Any]:  # noqa: ANN401
             region="us-east-1",
             cache_dir=str(cache_dir),
             tags=None,
+            stage="dev",
+            memory_size=8192,
+            s3_bucket=None,
         )
 
         result = handle_prepare_dockerfile(args)
         assert result == 0, "Prepare command should succeed"
 
-    model_dir = cache_dir / test_model
+    model_dir = cache_dir / "dev" / test_model
     assert model_dir.exists(), "Model directory should exist"
     assert (model_dir / "Dockerfile").exists(), "Dockerfile should exist"
 
