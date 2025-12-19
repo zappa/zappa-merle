@@ -61,7 +61,7 @@ class TestGetModelToUse:
         config_path = temp_cache_dir / "config.json"
         config_path.write_text(json.dumps(sample_config))
 
-        with pytest.raises(ValueError, match="Multiple models configured"):
+        with pytest.raises(ValueError, match="Multiple models are deployed \\(2 models"):
             get_model_to_use(temp_cache_dir, None)
 
 
@@ -109,6 +109,7 @@ class TestHandlePrepareDockerfile:
             s3_bucket="zappa-merle-12345678",
             stage="dev",
             memory_size=8192,
+            system_prompt=None,
         )
 
     @patch("merle.cli.prepare_deployment_files")
@@ -157,6 +158,7 @@ class TestHandlePrepareDockerfile:
             s3_bucket="zappa-merle-87654321",
             stage="dev",
             memory_size=8192,
+            system_prompt=None,
         )
 
     @patch("merle.cli.prepare_deployment_files")
@@ -255,6 +257,7 @@ class TestHandlePrepareDockerfile:
             s3_bucket="my-custom-bucket",
             stage="dev",
             memory_size=8192,
+            system_prompt=None,
         )
 
     @patch("merle.cli.get_model_cache_dir")
@@ -348,6 +351,7 @@ class TestHandlePrepareDockerfile:
             s3_bucket="existing-bucket",
             stage="dev",
             memory_size=8192,
+            system_prompt=None,
         )
 
     @patch("merle.cli.prepare_deployment_files")
@@ -401,6 +405,7 @@ class TestHandlePrepareDockerfile:
             s3_bucket="existing-bucket",  # Should reuse existing
             stage="dev",
             memory_size=8192,
+            system_prompt=None,
         )
 
 
@@ -889,6 +894,8 @@ class TestHandleChat:
             auth_token="test-token-123",
             model="llama2",
             debug=False,
+            system_prompt=None,
+            context_window_size=None,
         )
 
     @patch("merle.cli.get_model_cache_dir")

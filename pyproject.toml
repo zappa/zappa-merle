@@ -1,19 +1,17 @@
 [project]
 name = "merle"
-version = "0.1.0"
+version = "0.0.1"
 description = "This project uses zappa/ollama to deploy ollama compatable models to AWS lambda"
 authors = [{ name = "monkut", email = "hakkoakkei@gmail.com" }]
 readme = "README.md"
 keywords = ['python']
-requires-python = ">=3.13,<3.14"
+requires-python = ">=3.14,<3.15"
 classifiers = [
     "Intended Audience :: Developers",
     "Private :: Do Not Upload",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 license = "BSD-2-Clause"
@@ -23,7 +21,7 @@ license-files = ["LICENSE"]
 dependencies = [
     "flask>=3.1.0,<3.2.0",
     "httpx>=0.28.1",
-    "zappa==0.61.1",
+    "zappa==0.61.2",
 ]
 
 [project.urls]
@@ -68,7 +66,7 @@ shell = "mkdir test-reports || true && uv run pytest -v tests/ --junitxml=test-r
 include = ["merle", "notebooks"]
 exclude = ["**/.venv", "tmp/", "**/node_modules/", "**/__pycache__", "**/*.pyc", "tests/"]
 typeCheckingMode = "basic"
-pythonVersion = "3.13"
+pythonVersion = "3.14"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -167,7 +165,7 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 "**/cli.py" = ["T201", "TRY300", "TRY400", "TRY401", "PLC0415", "S603", "PLR0911", "PLR0915"]
 "**/chat.py" = ["T201", "TRY400", "TRY401"]
 "**/functions.py" = ["PLR2004", "TRY300", "TRY301", "TRY400", "TRY401", "B904"]
-"tests/**" = ["S105", "S106", "PLR2004", "FLY002", "ANN202", "ARG001", "F841"]
+"tests/**" = ["S105", "S106", "PLR2004", "FLY002", "ANN202", "ARG001", "F841", "TC003"]
 
 [tool.ruff.lint.mccabe]
 # Flag errors (`C901`) whenever the complexity level exceeds this value.

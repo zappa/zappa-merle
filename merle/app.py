@@ -19,6 +19,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def estimate_token_count(messages: list[dict[str, Any]]) -> int:
+    """
+    Estimate token count for a list of messages.
+
+    Uses a simple heuristic: ~4 characters per token.
+    This is approximate but sufficient for context window validation.
+
+    Args:
+        messages: List of message dictionaries with 'role' and 'content' fields
+
+    Returns:
+        Estimated token count
+    """
+    total_chars = 0
+    for msg in messages:
+        # Count role
+        total_chars += len(msg.get("role", ""))
+        # Count content
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            total_chars += len(content)
+        elif isinstance(content, list):
+            # Handle multimodal content (text + images)
+            for item in content:
+                if isinstance(item, dict) and "text" in item:
+                    total_chars += len(item["text"])
+
+    # Approximate: 4 chars per token (industry standard approximation)
+    # Add 10% buffer for formatting/structure overhead
+    estimated_tokens = int((total_chars / 4) * 1.1)
+    return estimated_tokens
+
+
 # Initialize Flask app
 app = Flask(__name__)
 
@@ -45,7 +79,7 @@ def health_check() -> tuple[dict[str, Any], int]:
 
 
 @app.route("/api/<path:path>", methods=["GET", "POST", "PUT", "DELETE"])
-def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:  # noqa: C901, PLR0912, PLR0915
+def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:  # noqa: C901, PLR0911, PLR0912, PLR0915
     """
     Proxy all /api/* requests to Ollama server.
 
@@ -66,6 +100,31 @@ def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:  # noqa
         headers = {
             key: value for key, value in request.headers.items() if key.lower() not in ["host", "content-length"]
         }
+
+        # Validate context window size for chat requests
+        if path == "chat" and data and isinstance(data, dict) and "messages" in data:
+            messages = data.get("messages", [])
+            if messages:
+                estimated_tokens = estimate_token_count(messages)
+                context_window_size = settings.OLLAMA_MODEL_CONTEXT_WINDOW_SIZE
+
+                logger.info(
+                    f"Chat request validation - estimated tokens: {estimated_tokens}, "
+                    f"context window: {context_window_size}"
+                )
+
+                if estimated_tokens > context_window_size:
+                    error_msg = (
+                        f"Request exceeds model context window. "
+                        f"Estimated tokens: {estimated_tokens}, "
+                        f"max context window: {context_window_size}. "
+                        f"Please reduce the conversation history or message length."
+                    )
+                    logger.warning(error_msg)
+                    return {
+                        "error": error_msg,
+                        "estimated_tokens": estimated_tokens,
+                    }, HTTPStatus.REQUEST_ENTITY_TOO_LARGE
 
         logger.info(f"Proxying {request.method} request to {target_url}")
 

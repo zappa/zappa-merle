@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
+from zappa.cli import ZappaCLI
 from zappa.core import Zappa
 
 from merle.settings import REGION
@@ -50,6 +51,100 @@ def mask_token(token: str, show_chars: int = 4) -> str:
         return "****"
 
     return f"{token[:show_chars]}...{token[-show_chars:]}"
+
+
+def read_system_prompt(system_prompt_arg: str | None) -> str | None:
+    """
+    Read system prompt from string or file.
+
+    Args:
+        system_prompt_arg: Either a system prompt string or path to a UTF-8 text file
+
+    Returns:
+        System prompt string or None if not provided
+
+    Raises:
+        ValueError: If file path is provided but file cannot be read
+    """
+    if not system_prompt_arg:
+        return None
+
+    # Check if it looks like a file path
+    potential_path = Path(system_prompt_arg)
+    if potential_path.exists() and potential_path.is_file():
+        try:
+            system_prompt = potential_path.read_text(encoding="utf-8")
+            logger.info(f"Loaded system prompt from file: {potential_path}")
+            return system_prompt.strip()
+        except (OSError, UnicodeDecodeError) as e:
+            error_msg = f"Failed to read system prompt from file {potential_path}: {e}"
+            logger.error(error_msg)
+            raise ValueError(error_msg) from e
+
+    # Treat as direct string
+    logger.info("Using system prompt from argument")
+    return system_prompt_arg.strip()
+
+
+def get_model_context_window_size(model_name: str) -> int:
+    """
+    Get the default context window size for an Ollama model.
+
+    Returns a default context window size based on known model families.
+    The actual size can be configured via num_ctx parameter when running the model.
+
+    Args:
+        model_name: Name of the model (e.g., 'llama2', 'mistral', 'tinyllama')
+
+    Returns:
+        Default context window size in tokens (defaults to 2048 if unknown)
+    """
+    # Extract base model name (handle variants like llama2:7b, mistral:latest, etc.)
+    base_name = model_name.split(":")[0].lower()
+
+    # Known model context window sizes (defaults before num_ctx override)
+    model_defaults = {
+        # LLaMA family
+        "llama2": 4096,
+        "llama3": 8192,
+        "llama3.1": 131072,  # 128K context
+        "llama3.2": 131072,
+        "codellama": 16384,
+        # Mistral family
+        "mistral": 8192,
+        "mixtral": 32768,
+        # Gemma family
+        "gemma": 8192,
+        "gemma2": 8192,
+        # Other popular models
+        "phi": 2048,
+        "phi3": 4096,
+        "tinyllama": 2048,
+        "qwen": 8192,
+        "deepseek": 4096,
+        "yi": 4096,
+        "solar": 4096,
+        "dolphin": 4096,
+        "orca": 4096,
+        "vicuna": 2048,
+        "starling": 8192,
+        "neural": 4096,
+        "openchat": 8192,
+    }
+
+    # Check if base model name matches any known models
+    for known_model, context_size in model_defaults.items():
+        if base_name.startswith(known_model):
+            logger.info(f"Using default context window size for {model_name}: {context_size} tokens")
+            return context_size
+
+    # Default fallback
+    default_size = 2048
+    logger.info(
+        f"Unknown model {model_name}, using default context window size: {default_size} tokens. "
+        f"This can be overridden via OLLAMA_CONTEXT_LENGTH environment variable."
+    )
+    return default_size
 
 
 def parse_tags(tags_str: str) -> dict[str, str]:
@@ -222,6 +317,8 @@ def update_model_config(
     tags: dict[str, str] | None = None,
     url: str | None = None,
     stage: str = "dev",
+    system_prompt: str | None = None,
+    context_window_size: int | None = None,
 ) -> None:
     """
     Update the configuration for a specific model-stage combination.
@@ -234,6 +331,8 @@ def update_model_config(
         tags: Optional AWS resource tags
         url: Optional deployment URL
         stage: Deployment stage (default: 'dev')
+        system_prompt: Optional system prompt for chat context
+        context_window_size: Optional context window size in tokens
     """
     config = load_config(cache_dir)
     normalized_name = normalize_model_name(model_name)
@@ -258,6 +357,10 @@ def update_model_config(
         model_config["tags"] = tags
     if url is not None:
         model_config["url"] = url
+    if system_prompt is not None:
+        model_config["system_prompt"] = system_prompt
+    if context_window_size is not None:
+        model_config["context_window_size"] = context_window_size
 
     save_config(cache_dir, config)
     logger.info(f"Updated configuration for model: {model_name}, stage: {stage}")
@@ -376,12 +479,14 @@ def _generate_zappa_settings(
     tags: dict[str, str],
     s3_bucket: str,
     auth_token: str,
-    authorizer_arn: str | None = None,
     stage: str = "dev",
     memory_size: int = 8192,
+    context_window_size: int | None = None,
 ) -> None:
     """
     Generate zappa_settings.json using Zappa's Python API.
+
+    Uses embedded authorizer (authorizer.lambda_handler) for API authentication.
 
     Args:
         output_path: Path where zappa_settings.json should be written
@@ -390,12 +495,10 @@ def _generate_zappa_settings(
         tags: AWS resource tags
         s3_bucket: S3 bucket name for Zappa deployment
         auth_token: Authentication token for API access
-        authorizer_arn: Optional ARN of the authorizer Lambda function
         stage: Zappa deployment stage (default: 'dev')
         memory_size: Lambda function memory size in MB (default: 8192)
+        context_window_size: Optional context window size in tokens
     """
-    from zappa.cli import ZappaCLI  # noqa: PLC0415
-
     logger.info(f"Generating {output_path} using Zappa Python API for stage '{stage}'")
 
     # Create ZappaCLI instance
@@ -409,20 +512,26 @@ def _generate_zappa_settings(
     normalized_model = normalize_model_name(model_name)
     stage_config = settings_dict[stage]
 
-    # Configure authorizer based on whether ARN is provided
-    if authorizer_arn:
-        authorizer_config = {
-            "arn": authorizer_arn,
-            "token_header": "X-API-Key",
-            "result_ttl": 300,
-        }
-    else:
-        # Placeholder - will be updated after authorizer deployment
-        authorizer_config = {
-            "function": "authorizer.lambda_handler",
-            "token_header": "X-API-Key",
-            "result_ttl": 300,
-        }
+    # Configure embedded authorizer for API authentication
+    authorizer_config = {
+        "function": "authorizer.lambda_handler",
+        "token_header": "X-API-Key",
+        "result_ttl": 300,
+    }
+
+    # Build environment variables
+    env_vars = {
+        "OLLAMA_MODEL": model_name,
+        "OLLAMA_URL": "http://localhost:11434",
+        "OLLAMA_MODELS": "/tmp/models",  # noqa: S108 - Lambda writable directory
+        "OLLAMA_STARTUP_TIMEOUT": "120",
+        "ZAPPA_RUNNING_IN_DOCKER": "True",
+        "API_KEY": auth_token,
+    }
+
+    # Add context window size if provided
+    if context_window_size:
+        env_vars["OLLAMA_MODEL_CONTEXT_WINDOW_SIZE"] = str(context_window_size)
 
     stage_config.update(
         {
@@ -432,14 +541,7 @@ def _generate_zappa_settings(
             "aws_region": aws_region,
             "memory_size": memory_size,
             "timeout_seconds": 900,
-            "environment_variables": {
-                "OLLAMA_MODEL": model_name,
-                "OLLAMA_URL": "http://localhost:11434",
-                "OLLAMA_MODELS": "/tmp/models",  # noqa: S108 - Lambda writable directory
-                "OLLAMA_STARTUP_TIMEOUT": "120",
-                "ZAPPA_RUNNING_IN_DOCKER": "True",
-                "API_KEY": auth_token,
-            },
+            "environment_variables": env_vars,
             "ephemeral_storage": {"Size": 5120},
             "keep_warm": False,
             "keep_warm_expression": "rate(4 minutes)",
@@ -468,6 +570,7 @@ def prepare_deployment_files(
     s3_bucket: str | None = None,
     stage: str = "dev",
     memory_size: int = 8192,
+    system_prompt: str | None = None,
 ) -> Path:
     """
     Prepare all necessary files for deployment.
@@ -481,6 +584,7 @@ def prepare_deployment_files(
         s3_bucket: Optional S3 bucket name for Zappa deployment (generated if not provided)
         stage: Deployment stage (default: 'dev')
         memory_size: Lambda function memory size in MB (default: 8192)
+        system_prompt: Optional system prompt for chat context
 
     Returns:
         Path to the model-stage-specific cache directory where files were created
@@ -501,7 +605,6 @@ def prepare_deployment_files(
     # Prepare replacements
     region = aws_region or REGION
     tags_dict = tags or {}
-    normalized_model = normalize_model_name(model_name)
 
     # Validate required parameters
     if not s3_bucket:
@@ -526,26 +629,17 @@ def prepare_deployment_files(
         replacements=replacements,
     )
 
-    # Generate authorizer zappa_settings.json
-    generate_from_template(
-        template_path=template_dir / "zappa_settings_authorizer.json.template",
-        output_path=model_cache_dir / "zappa_settings_authorizer.json",
-        replacements={
-            "NORMALIZED_MODEL": normalized_model,
-            "S3_BUCKET": s3_bucket,
-            "AWS_REGION": region,
-            "AUTH_TOKEN": auth_token,
-        },
-    )
-
     # Copy authorizer.py
     authorizer_src = template_dir / "authorizer.py"
     if authorizer_src.exists():
         shutil.copy2(authorizer_src, model_cache_dir / "authorizer.py")
         logger.info("Copied authorizer.py to model cache directory")
 
+    # Get context window size for the model
+    context_window_size = get_model_context_window_size(model_name)
+
     # Generate main zappa_settings.json using Zappa Python API
-    # Note: authorizer_arn will be None initially, will be updated after authorizer deployment
+    # Uses embedded authorizer (authorizer.lambda_handler function in same Lambda)
     _generate_zappa_settings(
         output_path=model_cache_dir / "zappa_settings.json",
         model_name=model_name,
@@ -553,8 +647,8 @@ def prepare_deployment_files(
         tags=tags_dict,
         s3_bucket=s3_bucket,
         auth_token=auth_token,
-        authorizer_arn=None,  # Will be updated after authorizer deployment
         memory_size=memory_size,
+        context_window_size=context_window_size,
     )
 
     # Copy pyproject.toml
@@ -591,56 +685,9 @@ def prepare_deployment_files(
         region=region,
         tags=tags_dict if tags_dict else None,
         stage=stage,
+        system_prompt=system_prompt,
+        context_window_size=context_window_size,
     )
 
     logger.info(f"Successfully prepared deployment files in {model_cache_dir}")
     return model_cache_dir
-
-
-def update_zappa_settings_authorizer(
-    model_cache_dir: Path,
-    authorizer_arn: str,
-    stage: str = "dev",
-) -> None:
-    """
-    Update the main zappa_settings.json with the authorizer ARN.
-
-    Args:
-        model_cache_dir: Path to the model cache directory
-        authorizer_arn: ARN of the deployed authorizer Lambda function
-        stage: Zappa deployment stage (default: 'dev')
-    """
-    zappa_settings_path = model_cache_dir / "zappa_settings.json"
-
-    if not zappa_settings_path.exists():
-        error_msg = f"zappa_settings.json not found at {zappa_settings_path}"
-        logger.error(error_msg)
-        raise FileNotFoundError(error_msg)
-
-    # Load existing settings
-    with zappa_settings_path.open() as f:
-        settings = json.load(f)
-
-    # Update authorizer configuration
-    if stage not in settings:
-        error_msg = f"Stage '{stage}' not found in zappa_settings.json"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-
-    settings[stage]["authorizer"] = {
-        "arn": authorizer_arn,
-        "token_header": "X-API-Key",
-        "result_ttl": 300,
-    }
-
-    # Write updated settings
-    with zappa_settings_path.open("w") as f:
-        json.dump(settings, f, indent=4, sort_keys=True)
-
-    logger.info(f"Updated {zappa_settings_path} with authorizer ARN: {authorizer_arn}")
-
-
-def process(filepath: Path, output_directory: Path) -> None:
-    """Process a file (placeholder function)."""
-    logger.debug(f"filepath={filepath}")
-    logger.debug(f"output_directory={output_directory}")

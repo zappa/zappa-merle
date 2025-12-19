@@ -37,6 +37,9 @@ ZAPPA_RUNNING_IN_DOCKER = os.getenv("ZAPPA_RUNNING_IN_DOCKER", "False").lower() 
 OLLAMA_STARTUP_TIMEOUT = int(os.getenv("OLLAMA_STARTUP_TIMEOUT", "30"))
 OLLAMA_REQUEST_TIMEOUT = float(os.getenv("OLLAMA_REQUEST_TIMEOUT", "300.0"))
 
+# Model Configuration
+OLLAMA_MODEL_CONTEXT_WINDOW_SIZE = int(os.getenv("OLLAMA_MODEL_CONTEXT_WINDOW_SIZE", "2048"))
+
 # Lambda Configuration Limits
 LAMBDA_MEMORY_SIZE_MIN = 128  # MB - AWS Lambda minimum
 LAMBDA_MEMORY_SIZE_MAX = 10240  # MB (10 GB) - AWS Lambda maximum

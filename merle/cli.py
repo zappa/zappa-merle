@@ -20,6 +20,7 @@ from merle.functions import (
     mask_token,
     parse_tags,
     prepare_deployment_files,
+    read_system_prompt,
     save_config,
 )
 from merle.settings import (
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 # Display constants
 MAX_MODEL_NAME_LENGTH = 30
+MAX_SYSTEM_PROMPT_DISPLAY_LENGTH = 40
 
 
 def generate_unique_bucket_name() -> str:
@@ -92,7 +94,10 @@ def get_model_to_use(cache_dir: Path, specified_model: str | None) -> str:
         return models[0]
 
     # Multiple models exist
-    error_msg = f"Multiple models configured: {', '.join(models)}. Please specify which model to use with --model."
+    error_msg = (
+        f"Multiple models are deployed ({len(models)} models: {', '.join(models)}). "
+        f"Please specify which model to use with --model."
+    )
     raise ValueError(error_msg)
 
 
@@ -135,6 +140,18 @@ def handle_prepare_dockerfile(args: argparse.Namespace) -> int:  # noqa: C901, P
                 logger.info(f"Parsed tags: {tags}")
             except ValueError as e:
                 logger.error(f"Invalid tags format: {e}")
+                print(f"Error: {e}", file=sys.stderr)
+                return 1
+
+        # Read system prompt if provided
+        system_prompt = None
+        if hasattr(args, "system_prompt") and args.system_prompt:
+            try:
+                system_prompt = read_system_prompt(args.system_prompt)
+                if system_prompt:
+                    logger.info(f"System prompt configured ({len(system_prompt)} characters)")
+            except ValueError as e:
+                logger.error(f"Invalid system prompt: {e}")
                 print(f"Error: {e}", file=sys.stderr)
                 return 1
 
@@ -210,6 +227,7 @@ def handle_prepare_dockerfile(args: argparse.Namespace) -> int:  # noqa: C901, P
             s3_bucket=s3_bucket,
             stage=stage,
             memory_size=args.memory_size,
+            system_prompt=system_prompt,
         )
 
         # Display the auth token if it was newly generated
@@ -303,6 +321,18 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
                     print(f"Error: {e}", file=sys.stderr)
                     return 1
 
+            # Read system prompt if provided
+            system_prompt = None
+            if hasattr(args, "system_prompt") and args.system_prompt:
+                try:
+                    system_prompt = read_system_prompt(args.system_prompt)
+                    if system_prompt:
+                        logger.info(f"System prompt configured ({len(system_prompt)} characters)")
+                except ValueError as e:
+                    logger.error(f"Invalid system prompt: {e}")
+                    print(f"Error: {e}", file=sys.stderr)
+                    return 1
+
             # Determine S3 bucket name
             s3_bucket = (
                 args.s3_bucket if hasattr(args, "s3_bucket") and args.s3_bucket else generate_unique_bucket_name()
@@ -325,6 +355,7 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
                     s3_bucket=s3_bucket,
                     stage=stage,
                     memory_size=args.memory_size,
+                    system_prompt=system_prompt,
                 )
 
                 # Display the auth token if it was newly generated
@@ -525,7 +556,7 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
         return 1
 
 
-def handle_list(args: argparse.Namespace) -> int:  # noqa: PLR0912
+def handle_list(args: argparse.Namespace) -> int:  # noqa: PLR0912, C901
     """
     Handle the list command.
 
@@ -558,7 +589,7 @@ def handle_list(args: argparse.Namespace) -> int:  # noqa: PLR0912
         model_stage_list.sort(key=lambda x: (x[0], x[1]))
 
         print(f"Configured models in {cache_dir}:\n")
-        print(f"{'Model':<20} {'Stage':<10} {'Status':<15} {'Region':<15} {'Auth Token':<20} {'URL':<50}")
+        print(f"{'Model':<20} {'Stage':<10} {'Status':<15} {'Region':<15} {'Auth Token':<20} {'System Prompt':<40}")
         print("=" * 130)
 
         for model_name, stage, model_config in model_stage_list:
@@ -576,6 +607,20 @@ def handle_list(args: argparse.Namespace) -> int:  # noqa: PLR0912
             auth_token = model_config.get("auth_token", "N/A")  # noqa: S105
             if auth_token != "N/A" and not args.raw:  # noqa: S105
                 auth_token = mask_token(auth_token)
+
+            # Get system prompt (truncate if too long)
+            system_prompt = model_config.get("system_prompt")
+            if system_prompt:
+                # Show first N-3 chars + "..." if longer than max display length
+                max_len = MAX_SYSTEM_PROMPT_DISPLAY_LENGTH
+                if len(system_prompt) > max_len:
+                    system_prompt_display = system_prompt[: max_len - 3] + "..."
+                else:
+                    system_prompt_display = system_prompt
+                # Replace newlines with space for display
+                system_prompt_display = system_prompt_display.replace("\n", " ")
+            else:
+                system_prompt_display = "Not configured"
 
             # Get deployment URL - first from config, optionally verify with --check-urls
             url = model_config.get("url", "Not deployed")
@@ -600,7 +645,13 @@ def handle_list(args: argparse.Namespace) -> int:  # noqa: PLR0912
                 else model_name
             )
 
-            print(f"{display_name:<20} {stage:<10} {status:<15} {region:<15} {auth_token:<20} {url:<50}")
+            print(
+                f"{display_name:<20} {stage:<10} {status:<15} {region:<15} {auth_token:<20} {system_prompt_display:<40}"
+            )
+
+            # If there's a URL, print it on the next line with indentation
+            if url and url != "Not deployed":
+                print(f"{'':>20} URL: {url}")
 
         print(f"\n{len(model_stage_list)} deployment(s) configured")
 
@@ -776,10 +827,12 @@ def handle_chat(args: argparse.Namespace) -> int:
             print(f"Error: {error_msg}", file=sys.stderr)
             return 1
 
-        # Get auth token
+        # Get auth token, system prompt, and context window size from config
         config = load_config(cache_dir)
         model_config = config.get("models", {}).get(model_name, {}).get(stage, {})
         auth_token = model_config.get("auth_token")
+        system_prompt = model_config.get("system_prompt")
+        context_window_size = model_config.get("context_window_size")
 
         if not auth_token:
             error_msg = (
@@ -795,9 +848,20 @@ def handle_chat(args: argparse.Namespace) -> int:
 
         logger.info(f"Connected to: {deployment_url}")
         logger.info(f"Using model: {model_name}, stage: {stage}")
+        if system_prompt:
+            logger.info(f"Using system prompt ({len(system_prompt)} characters)")
+        if context_window_size:
+            logger.info(f"Context window size: {context_window_size} tokens")
 
         # Start interactive chat
-        run_interactive_chat(base_url=deployment_url, auth_token=auth_token, model=model_name, debug=args.debug)
+        run_interactive_chat(
+            base_url=deployment_url,
+            auth_token=auth_token,
+            model=model_name,
+            debug=args.debug,
+            system_prompt=system_prompt,
+            context_window_size=context_window_size,
+        )
 
         return 0
 
@@ -844,6 +908,10 @@ def main() -> int:
         help="Authentication token for API access (optional, can be set during deploy)",
     )
     prepare_parser.add_argument(
+        "--system-prompt",
+        help="System prompt for chat context (string or path to UTF-8 text file)",
+    )
+    prepare_parser.add_argument(
         "--region",
         default=REGION,
         help=f"AWS region (default: {REGION})",
@@ -883,6 +951,10 @@ def main() -> int:
     deploy_parser.add_argument(
         "--auth-token",
         help="Authentication token for API access (uses existing token if already configured)",
+    )
+    deploy_parser.add_argument(
+        "--system-prompt",
+        help="System prompt for chat context (string or path to UTF-8 text file)",
     )
     deploy_parser.add_argument(
         "--model",

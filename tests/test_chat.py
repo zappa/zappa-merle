@@ -119,9 +119,10 @@ class TestChatClient:
         messages = [{"role": "user", "content": "Hello"}]
 
         with patch("sys.stdout", new_callable=StringIO):
-            result = client._make_request(messages)
+            response, metrics = client._make_request(messages)
 
-        assert result == "Hello there!"
+        assert response == "Hello there!"
+        assert isinstance(metrics, dict)
 
     @patch("merle.chat.httpx.Client")
     def test_make_request_http_error(self, mock_client_class: MagicMock):
@@ -149,6 +150,40 @@ class TestChatClient:
 
         with pytest.raises(httpx.HTTPStatusError):
             client._make_request(messages)
+
+    @patch("merle.chat.httpx.Client")
+    def test_make_request_gateway_timeout(self, mock_client_class: MagicMock, capsys: pytest.CaptureFixture[str]):
+        """Test request with 504 Gateway Timeout returns empty response with helpful message."""
+        mock_response = MagicMock()
+        mock_response.status_code = 504
+        mock_response.text = "Gateway Timeout"
+
+        mock_client = MagicMock()
+        mock_stream = MagicMock()
+        mock_stream.__enter__.return_value = mock_stream
+        mock_stream.__exit__.return_value = None
+        mock_stream.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "504 Gateway Timeout", request=MagicMock(), response=mock_response
+        )
+
+        mock_client.stream.return_value = mock_stream
+        mock_client.__enter__.return_value = mock_client
+        mock_client.__exit__.return_value = None
+
+        mock_client_class.return_value = mock_client
+
+        client = ChatClient("https://example.com", "token", "llama2")
+        messages = [{"role": "user", "content": "Hello"}]
+
+        # 504 errors should return empty response instead of raising exception
+        response, metrics = client._make_request(messages)
+        assert response == ""
+        assert metrics == {"prompt_eval_count": 0, "eval_count": 0, "prompt_eval_duration": 0, "eval_duration": 0}
+
+        # Check that the helpful message was printed
+        captured = capsys.readouterr()
+        assert "504 Gateway Timeout" in captured.out
+        assert "cold start" in captured.out
 
     @patch("merle.chat.httpx.Client")
     def test_make_request_connection_error(self, mock_client_class: MagicMock):
@@ -246,10 +281,11 @@ class TestChatClient:
         messages = [{"role": "user", "content": "Hello"}]
 
         with patch("sys.stdout", new_callable=StringIO):
-            result = client._make_request(messages)
+            response, metrics = client._make_request(messages)
 
         # Should still return valid content, skipping invalid line
-        assert result == "Valid"
+        assert response == "Valid"
+        assert isinstance(metrics, dict)
 
 
 class TestRunInteractiveChat:
@@ -269,8 +305,10 @@ class TestRunInteractiveChat:
         with patch("sys.stdout", new_callable=StringIO):
             run_interactive_chat("https://example.com", "token", "llama2")
 
-        # Verify client was created
-        mock_client_class.assert_called_once_with("https://example.com", "token", "llama2")
+        # Verify client was created (context_window_size defaults to 2048 when not provided)
+        mock_client_class.assert_called_once_with(
+            "https://example.com", "token", "llama2", system_prompt=None, context_window_size=2048
+        )
 
         # Verify chat was never called (exited immediately)
         mock_client.chat.assert_not_called()
@@ -423,3 +461,176 @@ class TestRunInteractiveChat:
         mock_get_logger.assert_any_call("httpx")
         # At least one call should set INFO level
         assert any(call[0][0] == 20 for call in mock_logger.setLevel.call_args_list)  # 20 is INFO level
+
+
+class TestContextWindowManagement:
+    """Tests for context window management and automatic trimming."""
+
+    def test_init_with_context_window_size(self):
+        """Test ChatClient initialization with context window size."""
+        client = ChatClient(
+            base_url="https://example.com",
+            auth_token="token",
+            model="llama2",
+            context_window_size=4096,
+        )
+
+        assert client.context_window_size == 4096
+        assert client.context_window_threshold == int(4096 * 0.8)  # 3276
+
+    def test_init_default_context_window_size(self):
+        """Test ChatClient uses default context window size when not specified."""
+        client = ChatClient(
+            base_url="https://example.com",
+            auth_token="token",
+            model="llama2",
+        )
+
+        assert client.context_window_size == 2048
+        assert client.context_window_threshold == int(2048 * 0.8)  # 1638
+
+    def test_conversation_summary_includes_context_window(self):
+        """Test that conversation summary includes context window information."""
+        client = ChatClient(
+            base_url="https://example.com",
+            auth_token="token",
+            model="llama2",
+            context_window_size=4096,
+        )
+
+        # Simulate token usage
+        client.last_prompt_tokens = 1000
+
+        summary = client.get_conversation_summary()
+
+        assert summary["context_window_size"] == 4096
+        assert summary["context_window_threshold"] == int(4096 * 0.8)
+        assert summary["context_usage_percent"] == 24.4  # 1000/4096 * 100
+
+    def test_context_usage_percent_zero_when_no_tokens(self):
+        """Test that context usage percent is 0 when no tokens used."""
+        client = ChatClient(
+            base_url="https://example.com",
+            auth_token="token",
+            model="llama2",
+            context_window_size=4096,
+        )
+
+        summary = client.get_conversation_summary()
+        assert summary["context_usage_percent"] == 0.0
+
+    @patch("merle.chat.httpx.Client")
+    def test_trim_conversation_history_when_threshold_exceeded(self, mock_client_class: MagicMock):
+        """Test that conversation history is trimmed when threshold is exceeded."""
+        # Mock successful response
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_lines.return_value = iter(
+            [
+                '{"message": {"role": "assistant", "content": "Response"}}',
+                '{"done": true, "prompt_eval_count": 2000, "eval_count": 50}',
+            ]
+        )
+        mock_response.raise_for_status.return_value = None
+
+        mock_stream = MagicMock()
+        mock_stream.__enter__.return_value = mock_response
+        mock_stream.__exit__.return_value = None
+
+        mock_client = MagicMock()
+        mock_client.stream.return_value = mock_stream
+        mock_client.__enter__.return_value = mock_client
+        mock_client.__exit__.return_value = None
+
+        mock_client_class.return_value = mock_client
+
+        # Create client with small context window
+        client = ChatClient("https://example.com", "token", "llama2", context_window_size=2048)
+
+        # Add multiple messages to conversation history
+        for i in range(10):
+            client._add_message("user", f"Message {i}")
+            client._add_message("assistant", f"Response {i}")
+
+        assert len(client.conversation_history) == 20  # 10 user + 10 assistant
+
+        # Make a request that exceeds threshold (mocked to return 2000 tokens)
+        with patch("sys.stdout", new_callable=StringIO):
+            client.chat("Test message")
+
+        # Verify that messages were trimmed
+        # Threshold is 1638 (80% of 2048), and we got 2000 tokens
+        # Should have removed approximately 1/3 of messages (6-7 messages in pairs)
+        assert len(client.conversation_history) < 20
+        assert len(client.conversation_history) >= 10  # Should keep some messages
+
+    @patch("merle.chat.httpx.Client")
+    def test_trim_preserves_system_messages(self, mock_client_class: MagicMock):
+        """Test that trimming preserves system messages."""
+        # Mock successful response with high token count
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_lines.return_value = iter(
+            [
+                '{"message": {"role": "assistant", "content": "Response"}}',
+                '{"done": true, "prompt_eval_count": 2000, "eval_count": 50}',
+            ]
+        )
+        mock_response.raise_for_status.return_value = None
+
+        mock_stream = MagicMock()
+        mock_stream.__enter__.return_value = mock_response
+        mock_stream.__exit__.return_value = None
+
+        mock_client = MagicMock()
+        mock_client.stream.return_value = mock_stream
+        mock_client.__enter__.return_value = mock_client
+        mock_client.__exit__.return_value = None
+
+        mock_client_class.return_value = mock_client
+
+        # Create client with system prompt and small context window
+        client = ChatClient(
+            "https://example.com",
+            "token",
+            "llama2",
+            system_prompt="You are a helpful assistant",
+            context_window_size=2048,
+        )
+
+        # Add multiple conversation messages
+        for i in range(10):
+            client._add_message("user", f"Message {i}")
+            client._add_message("assistant", f"Response {i}")
+
+        system_messages_before = len(client.get_messages_by_role("system"))
+        assert system_messages_before == 1
+
+        # Make a request that exceeds threshold
+        with patch("sys.stdout", new_callable=StringIO):
+            client.chat("Test message")
+
+        # Verify system messages are still present
+        system_messages_after = len(client.get_messages_by_role("system"))
+        assert system_messages_after == system_messages_before
+
+    def test_no_trim_when_below_threshold(self):
+        """Test that no trimming occurs when below threshold."""
+        client = ChatClient("https://example.com", "token", "llama2", context_window_size=4096)
+
+        # Add a few messages
+        client._add_message("user", "Message 1")
+        client._add_message("assistant", "Response 1")
+        client._add_message("user", "Message 2")
+        client._add_message("assistant", "Response 2")
+
+        # Set token count below threshold
+        client.last_prompt_tokens = 1000  # Well below 3276 threshold
+
+        messages_before = len(client.conversation_history)
+
+        # Call trim directly
+        client._trim_conversation_history()
+
+        # Verify no messages were removed
+        assert len(client.conversation_history) == messages_before
