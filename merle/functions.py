@@ -366,6 +366,66 @@ def update_model_config(
     logger.info(f"Updated configuration for model: {model_name}, stage: {stage}")
 
 
+def _validate_model_name_format(model_name: str) -> None:
+    """
+    Validate the format of an Ollama model name.
+
+    Supports formats: "model", "owner/model", "hf.co/owner/model"
+
+    Args:
+        model_name: Name of the Ollama model to validate
+
+    Raises:
+        ValueError: If the model name format is invalid
+    """
+    if not model_name.strip():
+        error_msg = "Model name cannot be empty"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+
+    if "/" not in model_name:
+        return  # Simple model name like "llama2" is valid
+
+    parts = model_name.split("/")
+    is_hf_model = model_name.startswith("hf.co/")
+
+    if is_hf_model:
+        if len(parts) != 3 or not all(parts):
+            error_msg = f"Invalid HuggingFace model format: {model_name}. Expected: 'hf.co/owner/model'"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+    elif len(parts) != 2 or not all(parts):
+        error_msg = f"Invalid model name format: {model_name}. Expected: 'owner/model' or 'model'"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+
+
+def _check_local_ollama(model_name: str) -> bool:
+    """
+    Check if a model exists in the local Ollama instance.
+
+    Args:
+        model_name: Name of the model to check
+
+    Returns:
+        True if found locally, False otherwise
+    """
+    try:
+        local_response = httpx.get(
+            "http://localhost:11434/api/tags",
+            timeout=5.0,
+        )
+        if local_response.status_code == 200:
+            models_data = local_response.json()
+            available_models = [m["name"] for m in models_data.get("models", [])]
+            if any(model_name in m for m in available_models):
+                logger.info(f"Model {model_name} found in local Ollama instance")
+                return True
+    except (httpx.ConnectError, httpx.TimeoutException):
+        logger.debug("Local Ollama instance not available")
+    return False
+
+
 def validate_ollama_model(model_name: str) -> bool:
     """
     Validate that the given Ollama model name exists in the Ollama library.
@@ -382,55 +442,21 @@ def validate_ollama_model(model_name: str) -> bool:
     logger.info(f"Validating Ollama model: {model_name}")
 
     try:
-        # Query Ollama library API to check if model exists
-        response = httpx.get(
-            "https://ollama.com/api/tags",
-            timeout=10.0,
-        )
+        # Validate model name format first
+        # Supports: "model", "owner/model", "hf.co/owner/model"
+        _validate_model_name_format(model_name)
 
-        # If we can't reach the API, try a local Ollama instance
-        if response.status_code != 200:
-            logger.warning("Could not reach Ollama library API, trying local instance")
-            try:
-                local_response = httpx.get(
-                    "http://localhost:11434/api/tags",
-                    timeout=5.0,
-                )
-                if local_response.status_code == 200:
-                    models_data = local_response.json()
-                    available_models = [m["name"] for m in models_data.get("models", [])]
-                    if any(model_name in m for m in available_models):
-                        logger.info(f"Model {model_name} found in local Ollama instance")
-                        return True
-            except (httpx.ConnectError, httpx.TimeoutException):
-                pass
-
-        # Validate model name format: should be in format "owner/model" or "model"
-        if "/" in model_name:
-            parts = model_name.split("/")
-            if len(parts) != 2 or not all(parts):
-                error_msg = f"Invalid model name format: {model_name}. Expected format: 'owner/model' or 'model'"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
-        elif not model_name.strip():
-            error_msg = "Model name cannot be empty"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
+        # Check local Ollama instance for custom/HuggingFace models
+        if _check_local_ollama(model_name):
+            return True
 
         # If we get here, assume the model name is valid
-        # (we can't exhaustively check all models without API access)
         logger.info(f"Model name {model_name} appears to be valid")
         return True
 
     except httpx.TimeoutException:
         logger.warning("Timeout while validating model, assuming valid format")
-        # Fallback to basic format validation
-        if "/" in model_name:
-            parts = model_name.split("/")
-            if len(parts) != 2 or not all(parts):
-                error_msg = f"Invalid model name format: {model_name}. Expected format: 'owner/model' or 'model'"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
+        _validate_model_name_format(model_name)
         return True
     except ValueError:
         raise
