@@ -1,5 +1,5 @@
 # AWS Lambda-compatible Dockerfile for Ollama Model Server
-FROM public.ecr.aws/lambda/python:3.13
+FROM public.ecr.aws/lambda/python:3.14
 
 ARG FUNCTION_DIR="/var/task/"
 
@@ -78,6 +78,25 @@ RUN ZAPPA_HANDLER_PATH=$( \
     ) && \
     echo "Copying Zappa handler from: $ZAPPA_HANDLER_PATH" && \
     cp $ZAPPA_HANDLER_PATH ${FUNCTION_DIR}
+
+# Cleanup: Remove build-only dependencies and unnecessary files to reduce image size
+RUN dnf remove -y git findutils procps && \
+    dnf clean all && \
+    rm -rf /var/cache/dnf && \
+    # Remove uv (not needed at runtime)
+    rm -f /usr/local/bin/uv && \
+    # Remove Python test directories and cache files
+    find /var/lang/lib/python3.14 -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
+    find /var/lang/lib/python3.14 -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
+    find /var/lang/lib/python3.14 -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
+    find /var/lang/lib/python3.14 -name "*.pyc" -delete 2>/dev/null || true && \
+    find /var/lang/lib/python3.14 -name "*.pyo" -delete 2>/dev/null || true && \
+    # Remove pip and setuptools (not needed at runtime)
+    rm -rf /var/lang/lib/python3.14/site-packages/pip* && \
+    rm -rf /var/lang/lib/python3.14/site-packages/setuptools* && \
+    # Remove documentation and temporary files
+    rm -rf /usr/share/doc /usr/share/man /usr/share/info && \
+    rm -rf /var/log/* /tmp/*
 
 # Lambda handler entry point
 CMD ["handler.lambda_handler"]
