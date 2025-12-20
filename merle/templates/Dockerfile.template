@@ -37,17 +37,16 @@ RUN curl -fsSL https://ollama.com/download/ollama-linux-amd64.tgz -o /tmp/ollama
 # Install uv from official source
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/
 
-# Copy dependency files
-COPY pyproject.toml uv.lock ${FUNCTION_DIR}
+# Copy dependency files (uv.lock is not copied - uv will resolve dependencies fresh
+# to ensure correct platform-specific packages for the container architecture)
+COPY pyproject.toml ${FUNCTION_DIR}
 
 WORKDIR ${FUNCTION_DIR}
 
 # Install Python dependencies using uv
+# Note: --frozen is not used because we don't copy uv.lock (architecture differences)
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --inexact
-
-# Copy application code
-COPY merle/ ${FUNCTION_DIR}/merle/
+    uv sync --no-dev --inexact
 
 # Copy authorizer and Zappa settings JSON
 COPY authorizer.py ${FUNCTION_DIR}/
