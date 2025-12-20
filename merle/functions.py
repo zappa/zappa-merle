@@ -5,6 +5,7 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
+import boto3
 import httpx
 from zappa.cli import ZappaCLI
 from zappa.core import Zappa
@@ -317,7 +318,7 @@ def get_model_cache_dir(cache_dir: Path, model_name: str, stage: str = "dev") ->
     return cache_dir / stage / normalized_name
 
 
-def get_deployment_url(model_cache_dir: Path) -> str | None:
+def get_deployment_url(model_cache_dir: Path) -> str | None:  # noqa: PLR0911
     """
     Get the deployment URL for a model using Zappa's Python API.
 
@@ -352,6 +353,20 @@ def get_deployment_url(model_cache_dir: Path) -> str | None:
             return None
 
         lambda_name = f"{project_name}-{stage}"
+        aws_region = stage_config.get("aws_region", "us-east-1")
+
+        # Check if CloudFormation stack exists before calling Zappa
+        # This avoids Zappa logging ERROR when stack doesn't exist
+        cf_client = boto3.client("cloudformation", region_name=aws_region)
+        try:
+            cf_client.describe_stacks(StackName=lambda_name)
+        except cf_client.exceptions.ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "ValidationError":
+                # Stack doesn't exist - model is configured but not deployed
+                logger.debug(f"CloudFormation stack '{lambda_name}' does not exist")
+                return None
+            raise
 
         # Create Zappa instance and get API URL
         zappa = Zappa()

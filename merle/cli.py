@@ -8,6 +8,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -552,17 +553,49 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
         print("=" * 80 + "\n")
 
         # Run zappa deploy from the model cache directory with Docker image URI
+        # Retry logic for IAM role propagation delay
+        max_retries = 3
+        retry_delay = 15  # seconds
         cmd = ["zappa", "deploy", "dev", "--docker-image-uri", image_uri]
-        logger.info(f"Running: {' '.join(cmd)}")
-        print(f"Deploying with Zappa: {' '.join(cmd)}")
 
-        result = subprocess.run(
-            cmd,
-            env=env,
-            cwd=model_cache_dir,
-            check=False,
-            capture_output=False,
-        )
+        for attempt in range(1, max_retries + 1):
+            logger.info(f"Running (attempt {attempt}/{max_retries}): {' '.join(cmd)}")
+            if attempt == 1:
+                print(f"Deploying with Zappa: {' '.join(cmd)}")
+            else:
+                print(f"Retrying deployment (attempt {attempt}/{max_retries})...")
+
+            result = subprocess.run(
+                cmd,
+                env=env,
+                cwd=model_cache_dir,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode == 0:
+                # Print stdout for successful deployment
+                if result.stdout:
+                    print(result.stdout)
+                break
+
+            # Check if this is an IAM role propagation error
+            error_output = result.stderr or result.stdout or ""
+            is_role_propagation_error = "role defined for the function cannot be assumed by Lambda" in error_output
+
+            if is_role_propagation_error and attempt < max_retries:
+                logger.warning(f"IAM role propagation delay detected, retrying in {retry_delay}s...")
+                print(f"\nAWS IAM role propagation delay detected. Waiting {retry_delay} seconds before retry...")
+                time.sleep(retry_delay)
+                continue
+
+            # Print output for failed attempts
+            if result.stdout:
+                print(result.stdout)
+            if result.stderr:
+                print(result.stderr, file=sys.stderr)
+            break
 
         if result.returncode == 0:
             # Get deployment URL and save to config
