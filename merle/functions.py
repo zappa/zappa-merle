@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 
 def normalize_model_name(model_name: str) -> str:
     """
-    Normalize a model name to be safe for use as a directory name.
+    Normalize a model name to be safe for use as a directory name and ECR repository.
 
-    Replaces special characters (including hyphens) with underscores to create
-    a cross-platform safe directory name.
+    Replaces special characters (including hyphens) with underscores and lowercases
+    the result to create a cross-platform safe directory name that's also valid for ECR.
 
     Args:
         model_name: Original model name (e.g., 'schroneko/gemma-2-2b-jpn-it')
@@ -33,7 +33,8 @@ def normalize_model_name(model_name: str) -> str:
     normalized = re.sub(r"_+", "_", normalized)
     # Remove leading/trailing underscores
     normalized = normalized.strip("_")
-    return normalized
+    # Lowercase for ECR compatibility (ECR requires lowercase repository names)
+    return normalized.lower()
 
 
 def sanitize_for_cloudformation(name: str) -> str:
@@ -47,7 +48,7 @@ def sanitize_for_cloudformation(name: str) -> str:
         name: Input name (may contain underscores or other invalid characters)
 
     Returns:
-        Sanitized name safe for CloudFormation (underscores replaced with hyphens)
+        Sanitized name safe for CloudFormation (underscores replaced with hyphens, lowercased)
     """
     # Replace underscores and other invalid characters with hyphens
     sanitized = re.sub(r"[_/\\:*?\"<>|]", "-", name)
@@ -58,7 +59,8 @@ def sanitize_for_cloudformation(name: str) -> str:
     # Ensure starts with a letter (prepend 'p-' if it starts with a number)
     if sanitized and sanitized[0].isdigit():
         sanitized = f"p-{sanitized}"
-    return sanitized
+    # Lowercase for consistency with ECR and other AWS resource naming
+    return sanitized.lower()
 
 
 def get_default_project_name() -> str:
