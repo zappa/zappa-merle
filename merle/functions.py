@@ -753,27 +753,10 @@ def prepare_deployment_files(
     else:
         logger.warning(f"pyproject.toml not found in consuming project: {consuming_project_root}")
 
-    # Copy uv.lock from consuming project if it exists
-    uv_lock_src = consuming_project_root / "uv.lock"
-    if uv_lock_src.exists():
-        shutil.copy2(uv_lock_src, model_cache_dir / "uv.lock")
-        logger.info(f"Copied uv.lock from consuming project: {consuming_project_root}")
-    else:
-        logger.debug(f"uv.lock not found in consuming project: {consuming_project_root}")
-
-    # Copy merle/ directory from installed package location
-    merle_src = Path(__file__).parent
-    merle_dst = model_cache_dir / "merle"
-
-    if merle_dst.exists():
-        shutil.rmtree(merle_dst)
-
-    shutil.copytree(
-        merle_src,
-        merle_dst,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".pytest_cache", "templates"),
-    )
-    logger.info(f"Copied merle/ package from installed location: {merle_src}")
+    # Note: We intentionally do NOT copy uv.lock or merle/ because:
+    # 1. The Docker image may use a different architecture than the host
+    # 2. uv will fetch dependencies (including merle from git) during Docker build
+    # This ensures the correct platform-specific packages are installed.
 
     # Update configuration
     update_model_config(
