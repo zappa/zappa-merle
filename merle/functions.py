@@ -36,6 +36,31 @@ def normalize_model_name(model_name: str) -> str:
     return normalized
 
 
+def sanitize_for_cloudformation(name: str) -> str:
+    """
+    Sanitize a name for use as a CloudFormation stack name.
+
+    CloudFormation stack names must match: [a-zA-Z][-a-zA-Z0-9]*
+    This means only letters, numbers, and hyphens are allowed (no underscores).
+
+    Args:
+        name: Input name (may contain underscores or other invalid characters)
+
+    Returns:
+        Sanitized name safe for CloudFormation (underscores replaced with hyphens)
+    """
+    # Replace underscores and other invalid characters with hyphens
+    sanitized = re.sub(r"[_/\\:*?\"<>|]", "-", name)
+    # Remove any duplicate hyphens
+    sanitized = re.sub(r"-+", "-", sanitized)
+    # Remove leading/trailing hyphens
+    sanitized = sanitized.strip("-")
+    # Ensure starts with a letter (prepend 'p-' if it starts with a number)
+    if sanitized and sanitized[0].isdigit():
+        sanitized = f"p-{sanitized}"
+    return sanitized
+
+
 def get_default_project_name() -> str:
     """
     Get the default project name from the current working directory name.
@@ -569,7 +594,8 @@ def _generate_zappa_settings(
 
     # Update with our specific configuration
     # Note: Zappa automatically appends "-{stage}" to project_name for the Lambda function name
-    normalized_project = normalize_model_name(project_name)
+    # CloudFormation stack names must match [a-zA-Z][-a-zA-Z0-9]* (no underscores allowed)
+    sanitized_project = sanitize_for_cloudformation(project_name)
     stage_config = settings_dict[stage]
 
     # Configure embedded authorizer for API authentication
@@ -596,7 +622,7 @@ def _generate_zappa_settings(
     stage_config.update(
         {
             "app_function": "merle.app.app",
-            "project_name": normalized_project,
+            "project_name": sanitized_project,
             "s3_bucket": s3_bucket,
             "aws_region": aws_region,
             "memory_size": memory_size,
