@@ -660,9 +660,12 @@ def prepare_deployment_files(
     model_cache_dir = get_model_cache_dir(cache_dir, model_name, stage)
     model_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # Get project root and template directory
-    project_root = Path(__file__).parent.parent
+    # Get template directory from installed package
     template_dir = Path(__file__).parent / "templates"
+
+    # Get consuming project root from current working directory
+    # (where the CLI is being run, not the installed package location)
+    consuming_project_root = Path.cwd()
 
     # Prepare replacements
     region = aws_region or REGION
@@ -714,20 +717,24 @@ def prepare_deployment_files(
         context_window_size=context_window_size,
     )
 
-    # Copy pyproject.toml
-    pyproject_src = project_root / "pyproject.toml"
+    # Copy pyproject.toml from consuming project (where CLI is run)
+    pyproject_src = consuming_project_root / "pyproject.toml"
     if pyproject_src.exists():
         shutil.copy2(pyproject_src, model_cache_dir / "pyproject.toml")
-        logger.info("Copied pyproject.toml to model cache directory")
+        logger.info(f"Copied pyproject.toml from consuming project: {consuming_project_root}")
+    else:
+        logger.warning(f"pyproject.toml not found in consuming project: {consuming_project_root}")
 
-    # Copy uv.lock if it exists
-    uv_lock_src = project_root / "uv.lock"
+    # Copy uv.lock from consuming project if it exists
+    uv_lock_src = consuming_project_root / "uv.lock"
     if uv_lock_src.exists():
         shutil.copy2(uv_lock_src, model_cache_dir / "uv.lock")
-        logger.info("Copied uv.lock to model cache directory")
+        logger.info(f"Copied uv.lock from consuming project: {consuming_project_root}")
+    else:
+        logger.debug(f"uv.lock not found in consuming project: {consuming_project_root}")
 
-    # Copy merle/ directory
-    merle_src = project_root / "merle"
+    # Copy merle/ directory from installed package location
+    merle_src = Path(__file__).parent
     merle_dst = model_cache_dir / "merle"
 
     if merle_dst.exists():
@@ -738,7 +745,7 @@ def prepare_deployment_files(
         merle_dst,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".pytest_cache", "templates"),
     )
-    logger.info("Copied merle/ directory to model cache directory")
+    logger.info(f"Copied merle/ package from installed location: {merle_src}")
 
     # Update configuration
     update_model_config(
