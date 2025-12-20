@@ -11,9 +11,13 @@ class TestDeploymentCompleteness:
     """Test that verifies what's missing for successful deployment."""
 
     @patch("merle.functions.validate_ollama_model")
-    def test_prepare_creates_expected_files(self, mock_validate: MagicMock, temp_cache_dir: Path) -> None:
+    @patch("merle.cli.get_default_project_name")
+    def test_prepare_creates_expected_files(
+        self, mock_get_default_project: MagicMock, mock_validate: MagicMock, temp_cache_dir: Path
+    ) -> None:
         """Test that prepare command creates expected deployment files."""
         mock_validate.return_value = True
+        mock_get_default_project.return_value = "testproject"
 
         # Prepare deployment files
         args = argparse.Namespace(
@@ -25,13 +29,14 @@ class TestDeploymentCompleteness:
             stage="dev",
             memory_size=8192,
             s3_bucket=None,
+            project=None,
         )
 
         result = handle_prepare_dockerfile(args)
         assert result == 0
 
         # Verify expected files were created
-        model_dir = temp_cache_dir / "dev" / "llama2"
+        model_dir = temp_cache_dir / "testproject" / "dev" / "llama2"
         assert model_dir.exists(), "Model directory should be created"
 
         expected_files = [
@@ -45,15 +50,17 @@ class TestDeploymentCompleteness:
             assert file_path.exists(), f"{filename} should be created"
 
         # Verify config.json was created
-        config_path = temp_cache_dir / "config.json"
+        config_path = temp_cache_dir / "testproject" / "config.json"
         assert config_path.exists(), "config.json should be created"
 
     @patch("merle.functions.validate_ollama_model")
+    @patch("merle.cli.get_default_project_name")
     def test_deployment_is_now_complete(  # noqa: PLR0915, PLR0912
-        self, mock_validate: MagicMock, temp_cache_dir: Path
+        self, mock_get_default_project: MagicMock, mock_validate: MagicMock, temp_cache_dir: Path
     ) -> None:
         """Verify that deployment is now complete with all required components."""
         mock_validate.return_value = True
+        mock_get_default_project.return_value = "testproject"
 
         # Prepare deployment files
         args = argparse.Namespace(
@@ -65,12 +72,13 @@ class TestDeploymentCompleteness:
             stage="dev",
             memory_size=8192,
             s3_bucket=None,
+            project=None,
         )
 
         result = handle_prepare_dockerfile(args)
         assert result == 0, "Prepare command should succeed"
 
-        model_dir = temp_cache_dir / "dev" / "llama2"
+        model_dir = temp_cache_dir / "testproject" / "dev" / "llama2"
         project_root = Path(__file__).parent.parent
 
         # Verify all components are now present

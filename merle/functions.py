@@ -36,6 +36,17 @@ def normalize_model_name(model_name: str) -> str:
     return normalized
 
 
+def get_default_project_name() -> str:
+    """
+    Get the default project name from the current working directory name.
+
+    Returns:
+        Normalized parent directory name as the default project name
+    """
+    cwd_name = Path.cwd().name
+    return normalize_model_name(cwd_name)
+
+
 def mask_token(token: str, show_chars: int = 4) -> str:
     """
     Mask an authentication token for display.
@@ -242,12 +253,33 @@ def save_config(cache_dir: Path, config: dict) -> None:
         raise
 
 
+def get_project_cache_dir(cache_dir: Path, project_name: str | None = None) -> Path:
+    """
+    Get the project-specific cache directory.
+
+    Prefixes the cache directory by the normalized project name to support
+    multiple projects using the same base cache directory.
+
+    Args:
+        cache_dir: Base cache directory
+        project_name: Project name (optional, will be normalized if provided)
+
+    Returns:
+        Path to the project-specific cache directory (cache_dir/normalized_project_name)
+        If project_name is None, returns cache_dir unchanged.
+    """
+    if project_name is None:
+        return cache_dir
+    normalized_project = normalize_model_name(project_name)
+    return cache_dir / normalized_project
+
+
 def get_model_cache_dir(cache_dir: Path, model_name: str, stage: str = "dev") -> Path:
     """
     Get the cache directory for a specific model and stage.
 
     Args:
-        cache_dir: Base cache directory
+        cache_dir: Base cache directory (should already be project-specific if using projects)
         model_name: Model name (original, will be normalized)
         stage: Deployment stage (default: 'dev')
 
@@ -505,6 +537,7 @@ def _generate_zappa_settings(
     tags: dict[str, str],
     s3_bucket: str,
     auth_token: str,
+    project_name: str,
     stage: str = "dev",
     memory_size: int = 8192,
     context_window_size: int | None = None,
@@ -521,6 +554,7 @@ def _generate_zappa_settings(
         tags: AWS resource tags
         s3_bucket: S3 bucket name for Zappa deployment
         auth_token: Authentication token for API access
+        project_name: Project name for the Lambda function (used as prefix)
         stage: Zappa deployment stage (default: 'dev')
         memory_size: Lambda function memory size in MB (default: 8192)
         context_window_size: Optional context window size in tokens
@@ -535,7 +569,7 @@ def _generate_zappa_settings(
 
     # Update with our specific configuration
     # Note: Zappa automatically appends "-{stage}" to project_name for the Lambda function name
-    normalized_model = normalize_model_name(model_name)
+    normalized_project = normalize_model_name(project_name)
     stage_config = settings_dict[stage]
 
     # Configure embedded authorizer for API authentication
@@ -562,7 +596,7 @@ def _generate_zappa_settings(
     stage_config.update(
         {
             "app_function": "merle.app.app",
-            "project_name": f"merle-{normalized_model}",
+            "project_name": normalized_project,
             "s3_bucket": s3_bucket,
             "aws_region": aws_region,
             "memory_size": memory_size,
@@ -590,6 +624,7 @@ def _generate_zappa_settings(
 def prepare_deployment_files(
     model_name: str,
     cache_dir: Path,
+    project_name: str,
     auth_token: str | None = None,
     aws_region: str | None = None,
     tags: dict[str, str] | None = None,
@@ -604,6 +639,7 @@ def prepare_deployment_files(
     Args:
         model_name: Name of the Ollama model to deploy
         cache_dir: Base cache directory (files will be created in model-stage subdirectory)
+        project_name: Project name for the Lambda function (used as prefix in zappa project_name)
         auth_token: Optional authentication token for API access
         aws_region: Optional AWS region (defaults to settings.REGION)
         tags: Optional AWS resource tags as key-value pairs
@@ -673,6 +709,7 @@ def prepare_deployment_files(
         tags=tags_dict,
         s3_bucket=s3_bucket,
         auth_token=auth_token,
+        project_name=project_name,
         memory_size=memory_size,
         context_window_size=context_window_size,
     )

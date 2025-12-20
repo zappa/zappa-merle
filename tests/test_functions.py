@@ -315,6 +315,7 @@ class TestGenerateZappaSettings:
             tags={},
             s3_bucket="test-zappa-bucket",
             auth_token="test-auth-token-12345",
+            project_name="myproject",
         )
 
         assert output_path.exists()
@@ -327,7 +328,7 @@ class TestGenerateZappaSettings:
 
         # Verify core configuration
         assert dev_config["app_function"] == "merle.app.app"
-        assert dev_config["project_name"] == "merle-llama2"  # Uses normalized model name
+        assert dev_config["project_name"] == "myproject"  # Uses normalized project name only
         assert dev_config["s3_bucket"] == "test-zappa-bucket"
         assert dev_config["aws_region"] == "us-east-1"
         assert dev_config["memory_size"] == 8192
@@ -369,6 +370,7 @@ class TestGenerateZappaSettings:
             tags=sample_tags,
             s3_bucket="test-bucket-with-tags",
             auth_token="test-auth-token-67890",
+            project_name="myproject",
         )
 
         with output_path.open() as f:
@@ -393,6 +395,7 @@ class TestPrepareDeploymentFiles:
         model_cache_dir = prepare_deployment_files(
             model_name="llama2",
             cache_dir=temp_cache_dir,
+            project_name="testproject",
             auth_token="test-token",
             aws_region="us-east-1",
             s3_bucket="test-bucket",
@@ -423,6 +426,7 @@ class TestPrepareDeploymentFiles:
         model_cache_dir = prepare_deployment_files(
             model_name="llama2",
             cache_dir=temp_cache_dir,
+            project_name="testproject",
             auth_token="test-token",
             tags=sample_tags,
             s3_bucket="test-bucket-tags",
@@ -448,6 +452,7 @@ class TestPrepareDeploymentFiles:
         model_cache_dir = prepare_deployment_files(
             model_name="llama2",
             cache_dir=temp_cache_dir,
+            project_name="testproject",
             auth_token="test-token-no-tags",
             s3_bucket="test-bucket-no-tags",
         )
@@ -472,6 +477,7 @@ class TestPrepareDeploymentFiles:
             prepare_deployment_files(
                 model_name="invalid///model",
                 cache_dir=temp_cache_dir,
+                project_name="testproject",
                 s3_bucket="test-bucket",
             )
 
@@ -483,6 +489,7 @@ class TestPrepareDeploymentFiles:
         model_cache_dir = prepare_deployment_files(
             model_name="owner/model-name",
             cache_dir=temp_cache_dir,
+            project_name="testproject",
             auth_token="test-token-normalized",
             s3_bucket="test-bucket-normalized",
         )

@@ -69,9 +69,14 @@ def deployment_files(tmp_path_factory: Any) -> dict[str, Any]:  # noqa: ANN401
     """
     cache_dir = tmp_path_factory.mktemp("docker_cache")
     test_model = "tinyllama"  # Smallest Ollama model for faster testing
+    test_project = "testproject"
 
-    with patch("merle.functions.validate_ollama_model") as mock_validate:
+    with (
+        patch("merle.functions.validate_ollama_model") as mock_validate,
+        patch("merle.cli.get_default_project_name") as mock_get_default_project,
+    ):
         mock_validate.return_value = True
+        mock_get_default_project.return_value = test_project
 
         args = argparse.Namespace(
             model=test_model,
@@ -82,12 +87,13 @@ def deployment_files(tmp_path_factory: Any) -> dict[str, Any]:  # noqa: ANN401
             stage="dev",
             memory_size=8192,
             s3_bucket=None,
+            project=None,
         )
 
         result = handle_prepare_dockerfile(args)
         assert result == 0, "Prepare command should succeed"
 
-    model_dir = cache_dir / "dev" / test_model
+    model_dir = cache_dir / test_project / "dev" / test_model
     assert model_dir.exists(), "Model directory should exist"
     assert (model_dir / "Dockerfile").exists(), "Dockerfile should exist"
 

@@ -72,8 +72,10 @@ class TestHandlePrepareDockerfile:
     @patch("merle.cli.generate_unique_bucket_name")
     @patch("merle.cli.get_model_cache_dir")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_prepare_success(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
         mock_get_cache: MagicMock,
         mock_gen_bucket: MagicMock,
@@ -85,6 +87,7 @@ class TestHandlePrepareDockerfile:
         mock_get_cache.return_value = temp_cache_dir / "llama2"
         mock_gen_bucket.return_value = "zappa-merle-12345678"
         mock_prepare.return_value = temp_cache_dir / "llama2"
+        mock_get_default_project.return_value = "testproject"
 
         args = argparse.Namespace(
             model="llama2",
@@ -95,6 +98,7 @@ class TestHandlePrepareDockerfile:
             s3_bucket=None,
             stage="dev",
             memory_size=8192,
+            project=None,
         )
 
         result = handle_prepare_dockerfile(args)
@@ -102,7 +106,8 @@ class TestHandlePrepareDockerfile:
         assert result == 0
         mock_prepare.assert_called_once_with(
             model_name="llama2",
-            cache_dir=temp_cache_dir,
+            cache_dir=temp_cache_dir / "testproject",
+            project_name="testproject",
             auth_token="test-token",
             aws_region="us-east-1",
             tags=None,
@@ -117,8 +122,10 @@ class TestHandlePrepareDockerfile:
     @patch("merle.cli.get_model_cache_dir")
     @patch("merle.cli.get_config_directory")
     @patch("merle.cli.parse_tags")
+    @patch("merle.cli.get_default_project_name")
     def test_prepare_with_tags(
         self,
+        mock_get_default_project: MagicMock,
         mock_parse_tags: MagicMock,
         mock_get_config: MagicMock,
         mock_get_cache: MagicMock,
@@ -133,6 +140,7 @@ class TestHandlePrepareDockerfile:
         mock_gen_bucket.return_value = "zappa-merle-87654321"
         mock_prepare.return_value = temp_cache_dir / "llama2"
         mock_parse_tags.return_value = sample_tags
+        mock_get_default_project.return_value = "testproject"
 
         args = argparse.Namespace(
             model="llama2",
@@ -143,6 +151,7 @@ class TestHandlePrepareDockerfile:
             s3_bucket=None,
             stage="dev",
             memory_size=8192,
+            project=None,
         )
 
         result = handle_prepare_dockerfile(args)
@@ -151,7 +160,8 @@ class TestHandlePrepareDockerfile:
         mock_parse_tags.assert_called_once_with("Environment=dev,Project=ollama")
         mock_prepare.assert_called_once_with(
             model_name="llama2",
-            cache_dir=temp_cache_dir,
+            cache_dir=temp_cache_dir / "testproject",
+            project_name="testproject",
             auth_token="test-token",
             aws_region="us-east-1",
             tags=sample_tags,
@@ -222,8 +232,10 @@ class TestHandlePrepareDockerfile:
     @patch("merle.cli.prepare_deployment_files")
     @patch("merle.cli.get_model_cache_dir")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_prepare_with_custom_s3_bucket(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
         mock_get_cache: MagicMock,
         mock_prepare: MagicMock,
@@ -233,6 +245,7 @@ class TestHandlePrepareDockerfile:
         mock_get_config.return_value = temp_cache_dir
         mock_get_cache.return_value = temp_cache_dir / "llama2"
         mock_prepare.return_value = temp_cache_dir / "llama2"
+        mock_get_default_project.return_value = "testproject"
 
         args = argparse.Namespace(
             model="llama2",
@@ -243,6 +256,7 @@ class TestHandlePrepareDockerfile:
             s3_bucket="my-custom-bucket",
             stage="dev",
             memory_size=8192,
+            project=None,
         )
 
         result = handle_prepare_dockerfile(args)
@@ -250,7 +264,8 @@ class TestHandlePrepareDockerfile:
         assert result == 0
         mock_prepare.assert_called_once_with(
             model_name="llama2",
-            cache_dir=temp_cache_dir,
+            cache_dir=temp_cache_dir / "testproject",
+            project_name="testproject",
             auth_token="test-token",
             aws_region="us-east-1",
             tags=None,
@@ -303,8 +318,10 @@ class TestHandlePrepareDockerfile:
     @patch("merle.cli.prepare_deployment_files")
     @patch("merle.cli.get_model_cache_dir")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_prepare_s3_bucket_same_as_existing(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
         mock_get_cache: MagicMock,
         mock_prepare: MagicMock,
@@ -312,8 +329,9 @@ class TestHandlePrepareDockerfile:
     ):
         """Test that providing same S3 bucket as existing deployment succeeds."""
         mock_get_config.return_value = temp_cache_dir
+        mock_get_default_project.return_value = "testproject"
 
-        model_cache_dir = temp_cache_dir / "llama2"
+        model_cache_dir = temp_cache_dir / "testproject" / "llama2"
         model_cache_dir.mkdir(parents=True)
 
         # Create existing zappa_settings.json with a bucket
@@ -337,6 +355,7 @@ class TestHandlePrepareDockerfile:
             s3_bucket="existing-bucket",  # Same bucket
             stage="dev",
             memory_size=8192,
+            project=None,
         )
 
         result = handle_prepare_dockerfile(args)
@@ -344,7 +363,8 @@ class TestHandlePrepareDockerfile:
         assert result == 0
         mock_prepare.assert_called_once_with(
             model_name="llama2",
-            cache_dir=temp_cache_dir,
+            cache_dir=temp_cache_dir / "testproject",
+            project_name="testproject",
             auth_token="test-token",
             aws_region="us-east-1",
             tags=None,
@@ -357,8 +377,10 @@ class TestHandlePrepareDockerfile:
     @patch("merle.cli.prepare_deployment_files")
     @patch("merle.cli.get_model_cache_dir")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_prepare_s3_bucket_reuses_existing(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
         mock_get_cache: MagicMock,
         mock_prepare: MagicMock,
@@ -366,8 +388,9 @@ class TestHandlePrepareDockerfile:
     ):
         """Test that existing S3 bucket is reused when not specified."""
         mock_get_config.return_value = temp_cache_dir
+        mock_get_default_project.return_value = "testproject"
 
-        model_cache_dir = temp_cache_dir / "llama2"
+        model_cache_dir = temp_cache_dir / "testproject" / "llama2"
         model_cache_dir.mkdir(parents=True)
 
         # Create existing zappa_settings.json with a bucket
@@ -391,6 +414,7 @@ class TestHandlePrepareDockerfile:
             s3_bucket=None,  # Not specified
             stage="dev",
             memory_size=8192,
+            project=None,
         )
 
         result = handle_prepare_dockerfile(args)
@@ -398,7 +422,8 @@ class TestHandlePrepareDockerfile:
         assert result == 0
         mock_prepare.assert_called_once_with(
             model_name="llama2",
-            cache_dir=temp_cache_dir,
+            cache_dir=temp_cache_dir / "testproject",
+            project_name="testproject",
             auth_token="test-token",
             aws_region="us-east-1",
             tags=None,

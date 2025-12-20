@@ -14,8 +14,10 @@ from pathlib import Path
 from merle import __version__
 from merle.chat import run_interactive_chat
 from merle.functions import (
+    get_default_project_name,
     get_deployment_url,
     get_model_cache_dir,
+    get_project_cache_dir,
     load_config,
     mask_token,
     parse_tags,
@@ -65,6 +67,52 @@ def get_config_directory() -> Path:
     return config_dir
 
 
+def get_effective_project_name(args: argparse.Namespace) -> str:
+    """
+    Get the effective project name based on args.
+
+    Uses --project if specified, otherwise defaults to the current directory name.
+
+    Args:
+        args: Parsed command-line arguments (expects project attribute)
+
+    Returns:
+        Project name (from --project or default from current directory name)
+    """
+    project_name = getattr(args, "project", None)
+    if project_name is None:
+        project_name = get_default_project_name()
+        logger.info(f"Using default project name from current directory: {project_name}")
+    return project_name
+
+
+def get_effective_cache_dir(args: argparse.Namespace) -> Path:
+    """
+    Get the effective cache directory based on args.
+
+    Applies project prefix (from --project or defaulting to current directory name).
+
+    Args:
+        args: Parsed command-line arguments (expects cache_dir and project attributes)
+
+    Returns:
+        Path to the effective cache directory (with project prefix)
+    """
+    # Determine base cache directory
+    if hasattr(args, "cache_dir") and args.cache_dir is not None:
+        base_cache_dir = Path(args.cache_dir).resolve()
+    else:
+        base_cache_dir = get_config_directory()
+
+    # Get project name (from --project or default)
+    project_name = get_effective_project_name(args)
+
+    cache_dir = get_project_cache_dir(base_cache_dir, project_name)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    return cache_dir
+
+
 def get_model_to_use(cache_dir: Path, specified_model: str | None) -> str:
     """
     Determine which model to use based on config and user input.
@@ -112,15 +160,12 @@ def handle_prepare_dockerfile(args: argparse.Namespace) -> int:  # noqa: C901, P
         Exit code (0 for success, 1 for error)
     """
     try:
-        # Use config directory if cache_dir not explicitly provided
-        if args.cache_dir is None:
-            cache_dir = get_config_directory()
-        else:
-            cache_dir = Path(args.cache_dir).resolve()
-            cache_dir.mkdir(parents=True, exist_ok=True)
+        # Get effective cache directory (with project prefix if specified)
+        cache_dir = get_effective_cache_dir(args)
 
         stage = args.stage
-        logger.info(f"Preparing deployment files for model: {args.model}, stage: {stage}")
+        project_info = f", project: {args.project}" if getattr(args, "project", None) else ""
+        logger.info(f"Preparing deployment files for model: {args.model}, stage: {stage}{project_info}")
         logger.info(f"Cache directory: {cache_dir}")
 
         # Validate memory size
@@ -221,6 +266,7 @@ def handle_prepare_dockerfile(args: argparse.Namespace) -> int:  # noqa: C901, P
         model_cache_dir = prepare_deployment_files(
             model_name=args.model,
             cache_dir=cache_dir,
+            project_name=get_effective_project_name(args),
             auth_token=auth_token,
             aws_region=args.region,
             tags=tags,
@@ -276,11 +322,12 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
     try:
         logger.info("Starting deployment using Zappa")
 
-        # Determine cache directory
-        cache_dir = Path(args.cache_dir).resolve() if args.cache_dir else get_config_directory()
+        # Get effective cache directory (with project prefix if specified)
+        cache_dir = get_effective_cache_dir(args)
 
         stage = args.stage
-        logger.info(f"stage: {stage}")
+        project_info = f", project: {args.project}" if getattr(args, "project", None) else ""
+        logger.info(f"stage: {stage}{project_info}")
 
         # Determine which model to use
         try:
@@ -349,6 +396,7 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
                 model_cache_dir = prepare_deployment_files(
                     model_name=model_name,
                     cache_dir=cache_dir,
+                    project_name=get_effective_project_name(args),
                     auth_token=auth_token,
                     aws_region=args.region,
                     tags=tags,
@@ -567,8 +615,8 @@ def handle_list(args: argparse.Namespace) -> int:  # noqa: PLR0912, C901
         Exit code (0 for success, 1 for error)
     """
     try:
-        # Determine cache directory
-        cache_dir = Path(args.cache_dir).resolve() if args.cache_dir else get_config_directory()
+        # Get effective cache directory (with project prefix if specified)
+        cache_dir = get_effective_cache_dir(args)
 
         # Load configuration
         config = load_config(cache_dir)
@@ -681,8 +729,8 @@ def handle_destroy(args: argparse.Namespace) -> int:
     try:
         logger.info("Tearing down deployment using Zappa")
 
-        # Determine cache directory
-        cache_dir = Path(args.cache_dir).resolve() if args.cache_dir else get_config_directory()
+        # Get effective cache directory (with project prefix if specified)
+        cache_dir = get_effective_cache_dir(args)
 
         # Determine which model to use
         try:
@@ -787,8 +835,8 @@ def handle_chat(args: argparse.Namespace) -> int:
     try:
         logger.info("Starting chat session")
 
-        # Determine cache directory
-        cache_dir = Path(args.cache_dir).resolve() if args.cache_dir else get_config_directory()
+        # Get effective cache directory (with project prefix if specified)
+        cache_dir = get_effective_cache_dir(args)
 
         # Determine which model to use
         try:
@@ -941,6 +989,10 @@ def main() -> int:
         help=f"Lambda function memory size in MB (default: {LAMBDA_MEMORY_SIZE_DEFAULT}, "
         f"min: {LAMBDA_MEMORY_SIZE_MIN}, max: {LAMBDA_MEMORY_SIZE_MAX})",
     )
+    prepare_parser.add_argument(
+        "--project",
+        help="Project name to prefix cache directory (allows multiple projects to share the same base cache)",
+    )
     prepare_parser.set_defaults(func=handle_prepare_dockerfile)
 
     # deploy command
@@ -989,6 +1041,10 @@ def main() -> int:
         help=f"Lambda function memory size in MB (default: {LAMBDA_MEMORY_SIZE_DEFAULT}, "
         f"min: {LAMBDA_MEMORY_SIZE_MIN}, max: {LAMBDA_MEMORY_SIZE_MAX}, only used if auto-preparing)",
     )
+    deploy_parser.add_argument(
+        "--project",
+        help="Project name to prefix cache directory (allows multiple projects to share the same base cache)",
+    )
     deploy_parser.set_defaults(func=handle_deploy)
 
     # list command
@@ -1010,6 +1066,10 @@ def main() -> int:
     list_parser.add_argument(
         "--cache-dir",
         help="Base cache directory (default: ~/.merle)",
+    )
+    list_parser.add_argument(
+        "--project",
+        help="Project name to prefix cache directory (allows multiple projects to share the same base cache)",
     )
     list_parser.set_defaults(func=handle_list)
 
@@ -1038,6 +1098,10 @@ def main() -> int:
         "--cache-dir",
         help="Base cache directory (default: ~/.merle)",
     )
+    destroy_parser.add_argument(
+        "--project",
+        help="Project name to prefix cache directory (allows multiple projects to share the same base cache)",
+    )
     destroy_parser.set_defaults(func=handle_destroy)
 
     # chat command
@@ -1062,6 +1126,10 @@ def main() -> int:
         "--debug",
         action="store_true",
         help="Show debug and info log messages during chat",
+    )
+    chat_parser.add_argument(
+        "--project",
+        help="Project name to prefix cache directory (allows multiple projects to share the same base cache)",
     )
     chat_parser.set_defaults(func=handle_chat)
 
