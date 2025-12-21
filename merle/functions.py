@@ -40,19 +40,19 @@ def normalize_model_name(model_name: str) -> str:
 
 def sanitize_for_cloudformation(name: str) -> str:
     """
-    Sanitize a name for use as a CloudFormation stack name.
+    Sanitize a name for use as a CloudFormation stack name and Lambda function name.
 
     CloudFormation stack names must match: [a-zA-Z][-a-zA-Z0-9]*
-    This means only letters, numbers, and hyphens are allowed (no underscores).
+    Lambda function names can only contain: a-z, A-Z, 0-9, _ and -
 
     Args:
         name: Input name (may contain underscores or other invalid characters)
 
     Returns:
-        Sanitized name safe for CloudFormation (underscores replaced with hyphens, lowercased)
+        Sanitized name safe for CloudFormation and Lambda (invalid chars replaced with hyphens)
     """
-    # Replace underscores and other invalid characters with hyphens
-    sanitized = re.sub(r"[_/\\:*?\"<>|]", "-", name)
+    # Replace underscores, periods, and other invalid characters with hyphens
+    sanitized = re.sub(r"[_./\\:*?\"<>|]", "-", name)
     # Remove any duplicate hyphens
     sanitized = re.sub(r"-+", "-", sanitized)
     # Remove leading/trailing hyphens
