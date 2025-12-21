@@ -19,17 +19,18 @@ def normalize_model_name(model_name: str) -> str:
     """
     Normalize a model name to be safe for use as a directory name and ECR repository.
 
-    Replaces special characters (including hyphens) with underscores and lowercases
-    the result to create a cross-platform safe directory name that's also valid for ECR.
+    Replaces special characters (including hyphens and periods) with underscores and
+    lowercases the result to create a cross-platform safe directory name that's also
+    valid for ECR and compatible with AWS resource naming conventions.
 
     Args:
-        model_name: Original model name (e.g., 'schroneko/gemma-2-2b-jpn-it')
+        model_name: Original model name (e.g., 'hf.co/owner/model-name')
 
     Returns:
-        Normalized name safe for use as directory (e.g., 'schroneko_gemma_2_2b_jpn_it')
+        Normalized name safe for use as directory (e.g., 'hf_co_owner_model_name')
     """
-    # Replace forward slashes, hyphens, and other problematic characters with underscores
-    normalized = re.sub(r'[/\\:*?"<>|\-]', "_", model_name)
+    # Replace forward slashes, hyphens, periods, and other problematic characters with underscores
+    normalized = re.sub(r'[/\\:*?"<>|\-.]', "_", model_name)
     # Remove any duplicate underscores
     normalized = re.sub(r"_+", "_", normalized)
     # Remove leading/trailing underscores
