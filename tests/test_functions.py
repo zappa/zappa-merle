@@ -50,6 +50,16 @@ class TestNormalizeModelName:
         result = normalize_model_name("llama2")
         assert result == "llama2"
 
+    def test_normalize_huggingface_model_with_periods(self):
+        """Test normalization of HuggingFace model names with periods in hf.co prefix."""
+        result = normalize_model_name("hf.co/mmnga/cyberagent_deepseek_r1_distill_qwen_14b_japa")
+        assert result == "hf_co_mmnga_cyberagent_deepseek_r1_distill_qwen_14b_japa"
+
+    def test_normalize_model_with_multiple_periods(self):
+        """Test that multiple periods are normalized correctly."""
+        result = normalize_model_name("model.name.with.dots")
+        assert result == "model_name_with_dots"
+
 
 class TestMaskToken:
     """Tests for mask_token function."""

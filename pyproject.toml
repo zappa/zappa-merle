@@ -44,8 +44,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]  # list of folders that contain the packages (["."] by default)
-include = ["merle"]  # package names should match these glob patterns (["*"] by default)
+include = ["merle", "merle.templates"]  # package names should match these glob patterns (["*"] by default)
 exclude = []  # exclude packages matching these glob patterns (empty by default)
+
+[tool.setuptools.package-data]
+merle = ["templates/*.template", "templates/*.py"]
 
 # Task runner
 [tool.poe.tasks]
