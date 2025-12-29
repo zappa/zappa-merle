@@ -82,6 +82,7 @@ class TestDeploymentCompleteness:
         project_root = Path(__file__).parent.parent
 
         # Verify all components are now present
+        # Note: merle/ package is installed during Docker build via uv sync, not copied
         checks_passed = []
         checks_failed = []
 
@@ -91,13 +92,7 @@ class TestDeploymentCompleteness:
         else:
             checks_failed.append("✗ merle/app.py missing in source")
 
-        # Check 2: app.py copied to cache
-        if (model_dir / "merle" / "app.py").exists():
-            checks_passed.append("✓ merle/app.py copied to cache directory")
-        else:
-            checks_failed.append("✗ merle/app.py not copied to cache")
-
-        # Check 3: Flask dependency
+        # Check 2: Flask dependency
         pyproject_path = project_root / "pyproject.toml"
         with pyproject_path.open() as f:
             if "flask" in f.read().lower():
@@ -105,36 +100,36 @@ class TestDeploymentCompleteness:
             else:
                 checks_failed.append("✗ Flask dependency missing")
 
-        # Check 4: Zappa dependency
+        # Check 3: Zappa dependency
         with pyproject_path.open() as f:
             if "zappa" in f.read().lower():
                 checks_passed.append("✓ Zappa dependency in pyproject.toml")
             else:
                 checks_failed.append("✗ Zappa dependency missing")
 
-        # Check 5: pyproject.toml copied
+        # Check 4: pyproject.toml copied
         if (model_dir / "pyproject.toml").exists():
             checks_passed.append("✓ pyproject.toml copied to cache")
         else:
             checks_failed.append("✗ pyproject.toml not copied")
 
-        # Check 6: merle/ directory copied
-        if (model_dir / "merle").exists():
-            checks_passed.append("✓ merle/ directory copied to cache")
-        else:
-            checks_failed.append("✗ merle/ directory not copied")
-
-        # Check 7: Dockerfile generated
+        # Check 5: Dockerfile generated
         if (model_dir / "Dockerfile").exists():
             checks_passed.append("✓ Dockerfile generated")
         else:
             checks_failed.append("✗ Dockerfile not generated")
 
-        # Check 8: zappa_settings.json generated
+        # Check 6: zappa_settings.json generated
         if (model_dir / "zappa_settings.json").exists():
             checks_passed.append("✓ zappa_settings.json generated")
         else:
             checks_failed.append("✗ zappa_settings.json not generated")
+
+        # Check 7: models/ directory with pre-downloaded model
+        if (model_dir / "models").exists():
+            checks_passed.append("✓ models/ directory created")
+        else:
+            checks_failed.append("✗ models/ directory not created")
 
         # Print summary
         print("\n" + "=" * 80)  # noqa: T201

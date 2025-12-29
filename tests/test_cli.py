@@ -1,7 +1,6 @@
 """Tests for merle.cli module."""
 
 import argparse
-import base64
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -68,25 +67,22 @@ class TestGetModelToUse:
 class TestHandlePrepareDockerfile:
     """Tests for handle_prepare_dockerfile command."""
 
-    @patch("merle.cli.prepare_deployment_files")
+    @patch("merle.managers.DeploymentManager.prepare")
     @patch("merle.cli.generate_unique_bucket_name")
-    @patch("merle.cli.get_model_cache_dir")
     @patch("merle.cli.get_config_directory")
     @patch("merle.cli.get_default_project_name")
     def test_prepare_success(
         self,
         mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
-        mock_get_cache: MagicMock,
         mock_gen_bucket: MagicMock,
         mock_prepare: MagicMock,
         temp_cache_dir: Path,
     ):
         """Test successful prepare command."""
         mock_get_config.return_value = temp_cache_dir
-        mock_get_cache.return_value = temp_cache_dir / "llama2"
         mock_gen_bucket.return_value = "zappa-merle-12345678"
-        mock_prepare.return_value = temp_cache_dir / "llama2"
+        mock_prepare.return_value = temp_cache_dir / "testproject" / "dev" / "llama2"
         mock_get_default_project.return_value = "testproject"
 
         args = argparse.Namespace(
@@ -105,21 +101,15 @@ class TestHandlePrepareDockerfile:
 
         assert result == 0
         mock_prepare.assert_called_once_with(
-            model_name="llama2",
-            cache_dir=temp_cache_dir / "testproject",
-            project_name="testproject",
             auth_token="test-token",
-            aws_region="us-east-1",
-            tags=None,
             s3_bucket="zappa-merle-12345678",
-            stage="dev",
+            tags=None,
             memory_size=8192,
             system_prompt=None,
         )
 
-    @patch("merle.cli.prepare_deployment_files")
+    @patch("merle.managers.DeploymentManager.prepare")
     @patch("merle.cli.generate_unique_bucket_name")
-    @patch("merle.cli.get_model_cache_dir")
     @patch("merle.cli.get_config_directory")
     @patch("merle.cli.parse_tags")
     @patch("merle.cli.get_default_project_name")
@@ -128,7 +118,6 @@ class TestHandlePrepareDockerfile:
         mock_get_default_project: MagicMock,
         mock_parse_tags: MagicMock,
         mock_get_config: MagicMock,
-        mock_get_cache: MagicMock,
         mock_gen_bucket: MagicMock,
         mock_prepare: MagicMock,
         temp_cache_dir: Path,
@@ -136,9 +125,8 @@ class TestHandlePrepareDockerfile:
     ):
         """Test prepare command with tags."""
         mock_get_config.return_value = temp_cache_dir
-        mock_get_cache.return_value = temp_cache_dir / "llama2"
         mock_gen_bucket.return_value = "zappa-merle-87654321"
-        mock_prepare.return_value = temp_cache_dir / "llama2"
+        mock_prepare.return_value = temp_cache_dir / "testproject" / "dev" / "llama2"
         mock_parse_tags.return_value = sample_tags
         mock_get_default_project.return_value = "testproject"
 
@@ -159,19 +147,14 @@ class TestHandlePrepareDockerfile:
         assert result == 0
         mock_parse_tags.assert_called_once_with("Environment=dev,Project=ollama")
         mock_prepare.assert_called_once_with(
-            model_name="llama2",
-            cache_dir=temp_cache_dir / "testproject",
-            project_name="testproject",
             auth_token="test-token",
-            aws_region="us-east-1",
-            tags=sample_tags,
             s3_bucket="zappa-merle-87654321",
-            stage="dev",
+            tags=sample_tags,
             memory_size=8192,
             system_prompt=None,
         )
 
-    @patch("merle.cli.prepare_deployment_files")
+    @patch("merle.managers.DeploymentManager.prepare")
     @patch("merle.cli.get_config_directory")
     @patch("merle.cli.parse_tags")
     def test_prepare_invalid_tags(
@@ -200,7 +183,7 @@ class TestHandlePrepareDockerfile:
         assert result == 1
         mock_prepare.assert_not_called()
 
-    @patch("merle.cli.prepare_deployment_files")
+    @patch("merle.managers.DeploymentManager.prepare")
     @patch("merle.cli.get_config_directory")
     def test_prepare_with_custom_cache_dir(
         self,
@@ -210,7 +193,7 @@ class TestHandlePrepareDockerfile:
     ):
         """Test prepare command with custom cache directory."""
         custom_cache = temp_cache_dir / "custom"
-        mock_prepare.return_value = custom_cache / "llama2"
+        mock_prepare.return_value = custom_cache / "dev" / "llama2"
 
         args = argparse.Namespace(
             model="llama2",
@@ -229,22 +212,19 @@ class TestHandlePrepareDockerfile:
         assert custom_cache.exists()
         mock_get_config.assert_not_called()  # Should not use default config dir
 
-    @patch("merle.cli.prepare_deployment_files")
-    @patch("merle.cli.get_model_cache_dir")
+    @patch("merle.managers.DeploymentManager.prepare")
     @patch("merle.cli.get_config_directory")
     @patch("merle.cli.get_default_project_name")
     def test_prepare_with_custom_s3_bucket(
         self,
         mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
-        mock_get_cache: MagicMock,
         mock_prepare: MagicMock,
         temp_cache_dir: Path,
     ):
         """Test prepare command with custom S3 bucket."""
         mock_get_config.return_value = temp_cache_dir
-        mock_get_cache.return_value = temp_cache_dir / "llama2"
-        mock_prepare.return_value = temp_cache_dir / "llama2"
+        mock_prepare.return_value = temp_cache_dir / "testproject" / "dev" / "llama2"
         mock_get_default_project.return_value = "testproject"
 
         args = argparse.Namespace(
@@ -263,30 +243,27 @@ class TestHandlePrepareDockerfile:
 
         assert result == 0
         mock_prepare.assert_called_once_with(
-            model_name="llama2",
-            cache_dir=temp_cache_dir / "testproject",
-            project_name="testproject",
             auth_token="test-token",
-            aws_region="us-east-1",
-            tags=None,
             s3_bucket="my-custom-bucket",
-            stage="dev",
+            tags=None,
             memory_size=8192,
             system_prompt=None,
         )
 
-    @patch("merle.cli.get_model_cache_dir")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_prepare_s3_bucket_immutable_error(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
-        mock_get_cache: MagicMock,
         temp_cache_dir: Path,
     ):
         """Test that changing S3 bucket for existing deployment fails."""
         mock_get_config.return_value = temp_cache_dir
+        mock_get_default_project.return_value = "testproject"
 
-        model_cache_dir = temp_cache_dir / "llama2"
+        # Create the model cache directory structure that DeploymentManager expects
+        model_cache_dir = temp_cache_dir / "testproject" / "dev" / "llama2"
         model_cache_dir.mkdir(parents=True)
 
         # Create existing zappa_settings.json with a bucket
@@ -297,8 +274,6 @@ class TestHandlePrepareDockerfile:
             }
         }
         (model_cache_dir / "zappa_settings.json").write_text(json.dumps(existing_settings))
-
-        mock_get_cache.return_value = model_cache_dir
 
         args = argparse.Namespace(
             model="llama2",
@@ -309,21 +284,20 @@ class TestHandlePrepareDockerfile:
             s3_bucket="different-bucket",  # Trying to change bucket
             stage="dev",
             memory_size=8192,
+            project=None,
         )
 
         result = handle_prepare_dockerfile(args)
 
         assert result == 1  # Should fail
 
-    @patch("merle.cli.prepare_deployment_files")
-    @patch("merle.cli.get_model_cache_dir")
+    @patch("merle.managers.DeploymentManager.prepare")
     @patch("merle.cli.get_config_directory")
     @patch("merle.cli.get_default_project_name")
     def test_prepare_s3_bucket_same_as_existing(
         self,
         mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
-        mock_get_cache: MagicMock,
         mock_prepare: MagicMock,
         temp_cache_dir: Path,
     ):
@@ -331,7 +305,7 @@ class TestHandlePrepareDockerfile:
         mock_get_config.return_value = temp_cache_dir
         mock_get_default_project.return_value = "testproject"
 
-        model_cache_dir = temp_cache_dir / "testproject" / "llama2"
+        model_cache_dir = temp_cache_dir / "testproject" / "dev" / "llama2"
         model_cache_dir.mkdir(parents=True)
 
         # Create existing zappa_settings.json with a bucket
@@ -343,7 +317,6 @@ class TestHandlePrepareDockerfile:
         }
         (model_cache_dir / "zappa_settings.json").write_text(json.dumps(existing_settings))
 
-        mock_get_cache.return_value = model_cache_dir
         mock_prepare.return_value = model_cache_dir
 
         args = argparse.Namespace(
@@ -362,27 +335,20 @@ class TestHandlePrepareDockerfile:
 
         assert result == 0
         mock_prepare.assert_called_once_with(
-            model_name="llama2",
-            cache_dir=temp_cache_dir / "testproject",
-            project_name="testproject",
             auth_token="test-token",
-            aws_region="us-east-1",
-            tags=None,
             s3_bucket="existing-bucket",
-            stage="dev",
+            tags=None,
             memory_size=8192,
             system_prompt=None,
         )
 
-    @patch("merle.cli.prepare_deployment_files")
-    @patch("merle.cli.get_model_cache_dir")
+    @patch("merle.managers.DeploymentManager.prepare")
     @patch("merle.cli.get_config_directory")
     @patch("merle.cli.get_default_project_name")
     def test_prepare_s3_bucket_reuses_existing(
         self,
         mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
-        mock_get_cache: MagicMock,
         mock_prepare: MagicMock,
         temp_cache_dir: Path,
     ):
@@ -390,7 +356,7 @@ class TestHandlePrepareDockerfile:
         mock_get_config.return_value = temp_cache_dir
         mock_get_default_project.return_value = "testproject"
 
-        model_cache_dir = temp_cache_dir / "testproject" / "llama2"
+        model_cache_dir = temp_cache_dir / "testproject" / "dev" / "llama2"
         model_cache_dir.mkdir(parents=True)
 
         # Create existing zappa_settings.json with a bucket
@@ -402,7 +368,6 @@ class TestHandlePrepareDockerfile:
         }
         (model_cache_dir / "zappa_settings.json").write_text(json.dumps(existing_settings))
 
-        mock_get_cache.return_value = model_cache_dir
         mock_prepare.return_value = model_cache_dir
 
         args = argparse.Namespace(
@@ -421,14 +386,9 @@ class TestHandlePrepareDockerfile:
 
         assert result == 0
         mock_prepare.assert_called_once_with(
-            model_name="llama2",
-            cache_dir=temp_cache_dir / "testproject",
-            project_name="testproject",
             auth_token="test-token",
-            aws_region="us-east-1",
-            tags=None,
             s3_bucket="existing-bucket",  # Should reuse existing
-            stage="dev",
+            tags=None,
             memory_size=8192,
             system_prompt=None,
         )
@@ -437,25 +397,26 @@ class TestHandlePrepareDockerfile:
 class TestHandleDeploy:
     """Tests for handle_deploy command."""
 
-    @patch("boto3.client")
-    @patch("merle.cli.subprocess.run")
-    @patch("merle.cli.get_model_cache_dir")
+    @patch("merle.managers.DeploymentManager.deploy")
+    @patch("merle.managers.DeploymentManager.build_and_push_docker_image")
     @patch("merle.cli.get_model_to_use")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_deploy_success_existing_files(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
         mock_get_model: MagicMock,
-        mock_get_cache: MagicMock,
-        mock_subprocess: MagicMock,
-        mock_boto_client: MagicMock,
+        mock_build_push: MagicMock,
+        mock_deploy: MagicMock,
         temp_cache_dir: Path,
     ):
         """Test successful deploy with existing files."""
         mock_get_config.return_value = temp_cache_dir
         mock_get_model.return_value = "llama2"
+        mock_get_default_project.return_value = "testproject"
 
-        model_cache_dir = temp_cache_dir / "llama2"
+        model_cache_dir = temp_cache_dir / "testproject" / "dev" / "llama2"
         model_cache_dir.mkdir(parents=True)
 
         # Create valid zappa_settings.json with required fields
@@ -468,31 +429,11 @@ class TestHandleDeploy:
         (model_cache_dir / "zappa_settings.json").write_text(json.dumps(zappa_settings))
 
         # Create config.json with auth token
-        config = {"models": {"llama2": {"auth_token": "test-token"}}}
-        (temp_cache_dir / "config.json").write_text(json.dumps(config))
+        config = {"models": {"llama2": {"dev": {"auth_token": "test-token"}}}}
+        (temp_cache_dir / "testproject" / "config.json").write_text(json.dumps(config))
 
-        mock_get_cache.return_value = model_cache_dir
-
-        # Mock ECR client
-        mock_ecr = MagicMock()
-        mock_ecr.create_repository.return_value = {}
-        mock_ecr.describe_repositories.return_value = {
-            "repositories": [{"repositoryUri": "123456789.dkr.ecr.us-east-1.amazonaws.com/merle-llama2"}]
-        }
-        # Mock ECR authentication with base64-encoded token
-        mock_token = base64.b64encode(b"AWS:mock-password").decode()
-        mock_ecr.get_authorization_token.return_value = {
-            "authorizationData": [
-                {
-                    "authorizationToken": mock_token,
-                    "proxyEndpoint": "https://123456789.dkr.ecr.us-east-1.amazonaws.com",
-                }
-            ]
-        }
-        mock_boto_client.return_value = mock_ecr
-
-        # Mock subprocess calls (docker login, docker build, docker push, zappa deploy)
-        mock_subprocess.return_value = MagicMock(returncode=0, stdout="mock-password")
+        mock_build_push.return_value = "123456789.dkr.ecr.us-east-1.amazonaws.com/merle-llama2:latest"
+        mock_deploy.return_value = "https://example.execute-api.us-east-1.amazonaws.com"
 
         args = argparse.Namespace(
             model="llama2",
@@ -501,37 +442,37 @@ class TestHandleDeploy:
             cache_dir=None,
             tags=None,
             stage="dev",
+            project=None,
         )
 
         result = handle_deploy(args)
 
         assert result == 0
-        # Should call subprocess multiple times: docker login, build, push, zappa deploy
-        assert mock_subprocess.call_count >= 4
+        mock_build_push.assert_called_once()
+        mock_deploy.assert_called_once_with(auth_token="test-token")
 
-    @patch("boto3.client")
-    @patch("merle.cli.subprocess.run")
-    @patch("merle.cli.prepare_deployment_files")
-    @patch("merle.cli.get_model_cache_dir")
+    @patch("merle.managers.DeploymentManager.deploy")
+    @patch("merle.managers.DeploymentManager.build_and_push_docker_image")
+    @patch("merle.managers.DeploymentManager.prepare")
     @patch("merle.cli.get_model_to_use")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_deploy_auto_prepare(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
         mock_get_model: MagicMock,
-        mock_get_cache: MagicMock,
         mock_prepare: MagicMock,
-        mock_subprocess: MagicMock,
-        mock_boto_client: MagicMock,
+        mock_build_push: MagicMock,
+        mock_deploy: MagicMock,
         temp_cache_dir: Path,
     ):
         """Test deploy with auto-prepare when files don't exist."""
         mock_get_config.return_value = temp_cache_dir
         mock_get_model.return_value = "llama2"
+        mock_get_default_project.return_value = "testproject"
 
-        model_cache_dir = temp_cache_dir / "llama2"
-        mock_get_cache.return_value = model_cache_dir
-        mock_prepare.return_value = model_cache_dir
+        model_cache_dir = temp_cache_dir / "testproject" / "dev" / "llama2"
 
         # Create zappa_settings.json after prepare is called
         def create_settings(*args, **kwargs):
@@ -545,31 +486,16 @@ class TestHandleDeploy:
             (model_cache_dir / "zappa_settings.json").write_text(json.dumps(zappa_settings))
 
             # Create config.json with auth token
-            config = {"models": {"llama2": {"auth_token": "test-token"}}}
-            (temp_cache_dir / "config.json").write_text(json.dumps(config))
+            config_dir = temp_cache_dir / "testproject"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            config = {"models": {"llama2": {"dev": {"auth_token": "test-token"}}}}
+            (config_dir / "config.json").write_text(json.dumps(config))
             return model_cache_dir
 
         mock_prepare.side_effect = create_settings
 
-        # Mock ECR client
-        mock_ecr = MagicMock()
-        mock_ecr.create_repository.return_value = {}
-        mock_ecr.describe_repositories.return_value = {
-            "repositories": [{"repositoryUri": "123456789.dkr.ecr.us-east-1.amazonaws.com/merle-llama2"}]
-        }
-        # Mock ECR authentication with base64-encoded token
-        mock_token = base64.b64encode(b"AWS:mock-password").decode()
-        mock_ecr.get_authorization_token.return_value = {
-            "authorizationData": [
-                {
-                    "authorizationToken": mock_token,
-                    "proxyEndpoint": "https://123456789.dkr.ecr.us-east-1.amazonaws.com",
-                }
-            ]
-        }
-        mock_boto_client.return_value = mock_ecr
-
-        mock_subprocess.return_value = MagicMock(returncode=0, stdout="mock-password")
+        mock_build_push.return_value = "123456789.dkr.ecr.us-east-1.amazonaws.com/merle-llama2:latest"
+        mock_deploy.return_value = "https://example.execute-api.us-east-1.amazonaws.com"
 
         args = argparse.Namespace(
             model="llama2",
@@ -580,14 +506,15 @@ class TestHandleDeploy:
             s3_bucket=None,
             stage="dev",
             memory_size=8192,
+            project=None,
         )
 
         result = handle_deploy(args)
 
         assert result == 0
         mock_prepare.assert_called_once()
-        # Should call subprocess multiple times: docker login, build, push, zappa deploy
-        assert mock_subprocess.call_count >= 4
+        mock_build_push.assert_called_once()
+        mock_deploy.assert_called_once()
 
     @patch("merle.cli.get_model_to_use")
     @patch("merle.cli.get_config_directory")
@@ -637,15 +564,15 @@ class TestHandleList:
 
         assert result == 0
 
-    @patch("merle.cli.get_deployment_url")
-    @patch("merle.cli.get_model_cache_dir")
+    @patch("merle.managers.DeploymentManager.get_deployment_url")
     @patch("merle.cli.get_config_directory")
     @patch("merle.cli.load_config")
+    @patch("merle.cli.get_default_project_name")
     def test_list_with_models(
         self,
+        mock_get_default_project: MagicMock,
         mock_load_config: MagicMock,
         mock_get_config: MagicMock,
-        mock_get_cache: MagicMock,
         mock_get_url: MagicMock,
         temp_cache_dir: Path,
         sample_config: dict,
@@ -653,20 +580,21 @@ class TestHandleList:
         """Test list command with configured models."""
         mock_get_config.return_value = temp_cache_dir
         mock_load_config.return_value = sample_config
-
-        # Create model directories with zappa_settings.json
-        for model_name in sample_config["models"]:
-            model_dir = temp_cache_dir / model_name
-            model_dir.mkdir(parents=True)
-            (model_dir / "zappa_settings.json").write_text("{}")
-            mock_get_cache.return_value = model_dir
-
+        mock_get_default_project.return_value = "testproject"
         mock_get_url.return_value = None
+
+        # Create model directories with zappa_settings.json in proper structure
+        for model_name in sample_config["models"]:
+            for stage in sample_config["models"][model_name]:
+                model_dir = temp_cache_dir / "testproject" / stage / model_name.replace("/", "_").lower()
+                model_dir.mkdir(parents=True)
+                (model_dir / "zappa_settings.json").write_text("{}")
 
         args = argparse.Namespace(
             cache_dir=None,
             raw=False,
             check_urls=False,
+            project=None,
         )
 
         result = handle_list(args)
@@ -674,14 +602,14 @@ class TestHandleList:
         assert result == 0
 
     @patch("merle.cli.mask_token")
-    @patch("merle.cli.get_model_cache_dir")
     @patch("merle.cli.get_config_directory")
     @patch("merle.cli.load_config")
+    @patch("merle.cli.get_default_project_name")
     def test_list_masks_tokens_by_default(
         self,
+        mock_get_default_project: MagicMock,
         mock_load_config: MagicMock,
         mock_get_config: MagicMock,
-        mock_get_cache: MagicMock,
         mock_mask: MagicMock,
         temp_cache_dir: Path,
         sample_config: dict,
@@ -690,17 +618,18 @@ class TestHandleList:
         mock_get_config.return_value = temp_cache_dir
         mock_load_config.return_value = sample_config
         mock_mask.return_value = "test...123"
+        mock_get_default_project.return_value = "testproject"
 
-        # Create model directory
-        model_dir = temp_cache_dir / "llama2"
+        # Create model directory in proper structure
+        model_dir = temp_cache_dir / "testproject" / "dev" / "llama2"
         model_dir.mkdir(parents=True)
         (model_dir / "zappa_settings.json").write_text("{}")
-        mock_get_cache.return_value = model_dir
 
         args = argparse.Namespace(
             cache_dir=None,
             raw=False,
             check_urls=False,
+            project=None,
         )
 
         result = handle_list(args)
@@ -714,162 +643,148 @@ class TestHandleDestroy:
     """Tests for handle_destroy command."""
 
     @patch("merle.cli.input")
-    @patch("merle.cli.subprocess.run")
-    @patch("merle.cli.get_model_cache_dir")
+    @patch("merle.managers.DeploymentManager.destroy")
     @patch("merle.cli.get_model_to_use")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_destroy_success_with_confirmation(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
         mock_get_model: MagicMock,
-        mock_get_cache: MagicMock,
-        mock_subprocess: MagicMock,
+        mock_destroy: MagicMock,
         mock_input: MagicMock,
         temp_cache_dir: Path,
     ):
         """Test successful destroy with user confirmation."""
         mock_get_config.return_value = temp_cache_dir
         mock_get_model.return_value = "llama2"
+        mock_get_default_project.return_value = "testproject"
 
-        model_cache_dir = temp_cache_dir / "llama2"
+        model_cache_dir = temp_cache_dir / "testproject" / "dev" / "llama2"
         model_cache_dir.mkdir(parents=True)
         (model_cache_dir / "zappa_settings.json").write_text("{}")
 
-        mock_get_cache.return_value = model_cache_dir
         mock_input.return_value = "yes"
-        mock_subprocess.return_value = MagicMock(returncode=0)
+        mock_destroy.return_value = True
 
         args = argparse.Namespace(
             model="llama2",
             cache_dir=None,
             yes=False,
             stage="dev",
+            project=None,
         )
 
         result = handle_destroy(args)
 
         assert result == 0
         mock_input.assert_called_once()
-        mock_subprocess.assert_called_once()
+        mock_destroy.assert_called_once_with(skip_confirmation=True)
 
-    @patch("merle.cli.subprocess.run")
-    @patch("merle.cli.get_model_cache_dir")
+    @patch("merle.managers.DeploymentManager.destroy")
     @patch("merle.cli.get_model_to_use")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_destroy_skip_confirmation(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
         mock_get_model: MagicMock,
-        mock_get_cache: MagicMock,
-        mock_subprocess: MagicMock,
+        mock_destroy: MagicMock,
         temp_cache_dir: Path,
     ):
         """Test destroy with --yes flag skips confirmation."""
         mock_get_config.return_value = temp_cache_dir
         mock_get_model.return_value = "llama2"
+        mock_get_default_project.return_value = "testproject"
 
-        model_cache_dir = temp_cache_dir / "llama2"
+        model_cache_dir = temp_cache_dir / "testproject" / "dev" / "llama2"
         model_cache_dir.mkdir(parents=True)
         (model_cache_dir / "zappa_settings.json").write_text("{}")
 
-        mock_get_cache.return_value = model_cache_dir
-        mock_subprocess.return_value = MagicMock(returncode=0)
+        mock_destroy.return_value = True
 
         args = argparse.Namespace(
             model="llama2",
             cache_dir=None,
             yes=True,
             stage="dev",
+            project=None,
         )
 
         result = handle_destroy(args)
 
         assert result == 0
-        mock_subprocess.assert_called_once()
+        mock_destroy.assert_called_once_with(skip_confirmation=True)
 
-    @patch("merle.cli.get_model_cache_dir")
     @patch("merle.cli.get_model_to_use")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_destroy_no_deployment_found(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
         mock_get_model: MagicMock,
-        mock_get_cache: MagicMock,
         temp_cache_dir: Path,
     ):
         """Test destroy when no deployment exists."""
         mock_get_config.return_value = temp_cache_dir
         mock_get_model.return_value = "llama2"
+        mock_get_default_project.return_value = "testproject"
 
-        model_cache_dir = temp_cache_dir / "llama2"
-        mock_get_cache.return_value = model_cache_dir
+        # Do not create model_cache_dir to simulate no deployment
 
         args = argparse.Namespace(
             model="llama2",
             cache_dir=None,
             yes=True,
             stage="dev",
+            project=None,
         )
 
         result = handle_destroy(args)
 
         assert result == 1
 
-    @patch("merle.cli.save_config")
-    @patch("merle.cli.load_config")
-    @patch("merle.cli.subprocess.run")
-    @patch("merle.cli.get_model_cache_dir")
+    @patch("merle.managers.DeploymentManager.destroy")
     @patch("merle.cli.get_model_to_use")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_destroy_cleans_up_when_zappa_fails(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
         mock_get_model: MagicMock,
-        mock_get_cache: MagicMock,
-        mock_subprocess: MagicMock,
-        mock_load_config: MagicMock,
-        mock_save_config: MagicMock,
+        mock_destroy: MagicMock,
         temp_cache_dir: Path,
     ):
         """Test destroy cleans up local files even when zappa undeploy fails."""
         mock_get_config.return_value = temp_cache_dir
         mock_get_model.return_value = "llama2"
+        mock_get_default_project.return_value = "testproject"
 
         # Create model cache directory and config
-        model_cache_dir = temp_cache_dir / "llama2"
+        model_cache_dir = temp_cache_dir / "testproject" / "dev" / "llama2"
         model_cache_dir.mkdir(parents=True)
         (model_cache_dir / "zappa_settings.json").write_text("{}")
 
-        # Create config file
-        config_file = temp_cache_dir / "config.json"
-        config_file.write_text('{"models": {"llama2": {"dev": {"region": "us-east-1"}}}}')
-
-        mock_get_cache.return_value = model_cache_dir
-        mock_load_config.return_value = {"models": {"llama2": {"dev": {"region": "us-east-1"}}}}
-
-        # Simulate zappa undeploy failure (e.g., no AWS resources)
-        mock_subprocess.return_value = MagicMock(returncode=1)
+        # Simulate zappa undeploy failure (manager.destroy returns False but still cleans up)
+        mock_destroy.return_value = False
 
         args = argparse.Namespace(
             model="llama2",
             cache_dir=None,
             yes=True,
             stage="dev",
+            project=None,
         )
 
         result = handle_destroy(args)
 
         # Should succeed (return 0) despite zappa failure
         assert result == 0
-
-        # Verify cleanup still happened
-        mock_save_config.assert_called_once()
-        # Verify model was removed from config
-        saved_config = mock_save_config.call_args[0][1]
-        assert "llama2" not in saved_config.get("models", {})
-
-        # Verify directory was cleaned up
-        assert not model_cache_dir.exists()
+        mock_destroy.assert_called_once_with(skip_confirmation=True)
 
 
 class TestHandleChat:
@@ -877,15 +792,15 @@ class TestHandleChat:
 
     @patch("merle.cli.run_interactive_chat")
     @patch("merle.cli.load_config")
-    @patch("merle.cli.get_deployment_url")
-    @patch("merle.cli.get_model_cache_dir")
+    @patch("merle.managers.DeploymentManager.get_deployment_url")
     @patch("merle.cli.get_model_to_use")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_chat_success(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
         mock_get_model: MagicMock,
-        mock_get_cache: MagicMock,
         mock_get_url: MagicMock,
         mock_load_config: MagicMock,
         mock_run_chat: MagicMock,
@@ -895,12 +810,12 @@ class TestHandleChat:
         """Test successful chat command."""
         mock_get_config.return_value = temp_cache_dir
         mock_get_model.return_value = "llama2"
+        mock_get_default_project.return_value = "testproject"
 
-        model_cache_dir = temp_cache_dir / "llama2"
+        model_cache_dir = temp_cache_dir / "testproject" / "dev" / "llama2"
         model_cache_dir.mkdir(parents=True)
         (model_cache_dir / "zappa_settings.json").write_text("{}")
 
-        mock_get_cache.return_value = model_cache_dir
         mock_get_url.return_value = "https://example.execute-api.us-east-1.amazonaws.com"
         mock_load_config.return_value = sample_config
 
@@ -909,6 +824,7 @@ class TestHandleChat:
             cache_dir=None,
             stage="dev",
             debug=False,
+            project=None,
         )
 
         result = handle_chat(args)
@@ -923,60 +839,62 @@ class TestHandleChat:
             context_window_size=None,
         )
 
-    @patch("merle.cli.get_model_cache_dir")
     @patch("merle.cli.get_model_to_use")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_chat_model_not_prepared(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
         mock_get_model: MagicMock,
-        mock_get_cache: MagicMock,
         temp_cache_dir: Path,
     ):
         """Test chat when model is not prepared."""
         mock_get_config.return_value = temp_cache_dir
         mock_get_model.return_value = "llama2"
+        mock_get_default_project.return_value = "testproject"
 
-        model_cache_dir = temp_cache_dir / "llama2"
-        mock_get_cache.return_value = model_cache_dir
+        # Do not create model cache directory to simulate not prepared
 
         args = argparse.Namespace(
             model="llama2",
             cache_dir=None,
             stage="dev",
+            project=None,
         )
 
         result = handle_chat(args)
 
         assert result == 1
 
-    @patch("merle.cli.get_deployment_url")
-    @patch("merle.cli.get_model_cache_dir")
+    @patch("merle.managers.DeploymentManager.get_deployment_url")
     @patch("merle.cli.get_model_to_use")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_chat_model_not_deployed(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
         mock_get_model: MagicMock,
-        mock_get_cache: MagicMock,
         mock_get_url: MagicMock,
         temp_cache_dir: Path,
     ):
         """Test chat when model is not deployed."""
         mock_get_config.return_value = temp_cache_dir
         mock_get_model.return_value = "llama2"
+        mock_get_default_project.return_value = "testproject"
 
-        model_cache_dir = temp_cache_dir / "llama2"
+        model_cache_dir = temp_cache_dir / "testproject" / "dev" / "llama2"
         model_cache_dir.mkdir(parents=True)
         (model_cache_dir / "zappa_settings.json").write_text("{}")
 
-        mock_get_cache.return_value = model_cache_dir
         mock_get_url.return_value = None
 
         args = argparse.Namespace(
             model="llama2",
             cache_dir=None,
             stage="dev",
+            project=None,
         )
 
         result = handle_chat(args)
@@ -984,15 +902,15 @@ class TestHandleChat:
         assert result == 1
 
     @patch("merle.cli.load_config")
-    @patch("merle.cli.get_deployment_url")
-    @patch("merle.cli.get_model_cache_dir")
+    @patch("merle.managers.DeploymentManager.get_deployment_url")
     @patch("merle.cli.get_model_to_use")
     @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
     def test_chat_no_auth_token(
         self,
+        mock_get_default_project: MagicMock,
         mock_get_config: MagicMock,
         mock_get_model: MagicMock,
-        mock_get_cache: MagicMock,
         mock_get_url: MagicMock,
         mock_load_config: MagicMock,
         temp_cache_dir: Path,
@@ -1000,12 +918,12 @@ class TestHandleChat:
         """Test chat when no auth token is configured."""
         mock_get_config.return_value = temp_cache_dir
         mock_get_model.return_value = "llama2"
+        mock_get_default_project.return_value = "testproject"
 
-        model_cache_dir = temp_cache_dir / "llama2"
+        model_cache_dir = temp_cache_dir / "testproject" / "dev" / "llama2"
         model_cache_dir.mkdir(parents=True)
         (model_cache_dir / "zappa_settings.json").write_text("{}")
 
-        mock_get_cache.return_value = model_cache_dir
         mock_get_url.return_value = "https://example.execute-api.us-east-1.amazonaws.com"
         mock_load_config.return_value = {"models": {"llama2": {"dev": {}}}}  # No auth_token
 
@@ -1013,6 +931,7 @@ class TestHandleChat:
             model="llama2",
             cache_dir=None,
             stage="dev",
+            project=None,
         )
 
         result = handle_chat(args)

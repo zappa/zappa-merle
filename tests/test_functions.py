@@ -502,6 +502,7 @@ class TestPrepareDeploymentFiles:
             project_name="testproject",
             auth_token="test-token-normalized",
             s3_bucket="test-bucket-normalized",
+            skip_model_download=True,
         )
 
         assert model_cache_dir.name == "owner_model_name"

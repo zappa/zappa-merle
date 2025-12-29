@@ -1,14 +1,10 @@
 """CLI for managing Ollama model deployment to AWS Lambda."""
 
 import argparse
-import base64
 import json
 import logging
 import secrets
-import shutil
-import subprocess
 import sys
-import time
 import uuid
 from pathlib import Path
 
@@ -16,16 +12,13 @@ from merle import __version__
 from merle.chat import run_interactive_chat
 from merle.functions import (
     get_default_project_name,
-    get_deployment_url,
-    get_model_cache_dir,
     get_project_cache_dir,
     load_config,
     mask_token,
     parse_tags,
-    prepare_deployment_files,
     read_system_prompt,
-    save_config,
 )
+from merle.managers import DeploymentManager
 from merle.settings import (
     LAMBDA_MEMORY_SIZE_DEFAULT,
     LAMBDA_MEMORY_SIZE_MAX,
@@ -201,21 +194,25 @@ def handle_prepare_dockerfile(args: argparse.Namespace) -> int:  # noqa: C901, P
                 print(f"Error: {e}", file=sys.stderr)
                 return 1
 
+        # Create DeploymentManager
+        manager = DeploymentManager(
+            model_name=args.model,
+            cache_dir=cache_dir,
+            project_name=get_effective_project_name(args),
+            stage=stage,
+            region=args.region,
+        )
+
         # Load existing configuration to check for existing values
-        # Use nested structure: models[model_name][stage]
         config = load_config(cache_dir)
         existing_model_config = config.get("models", {}).get(args.model, {}).get(stage, {})
         existing_auth_token = existing_model_config.get("auth_token")
 
         # Check if zappa_settings.json already exists
-        model_cache_dir_check = get_model_cache_dir(cache_dir, args.model, stage)
-        zappa_settings_path = model_cache_dir_check / "zappa_settings.json"
-
         existing_s3_bucket = None
-        if zappa_settings_path.exists():
-            # Load existing settings to get the S3 bucket
+        if manager.is_prepared:
             try:
-                with zappa_settings_path.open() as f:
+                with manager.zappa_settings_path.open() as f:
                     existing_settings = json.load(f)
                     existing_s3_bucket = existing_settings.get("dev", {}).get("s3_bucket")
             except (json.JSONDecodeError, OSError) as e:
@@ -223,7 +220,6 @@ def handle_prepare_dockerfile(args: argparse.Namespace) -> int:  # noqa: C901, P
 
         # Determine S3 bucket name
         if existing_s3_bucket:
-            # Settings already exist - bucket cannot be changed
             if args.s3_bucket and args.s3_bucket != existing_s3_bucket:
                 error_msg = (
                     f"Cannot change S3 bucket for existing deployment.\n"
@@ -237,7 +233,6 @@ def handle_prepare_dockerfile(args: argparse.Namespace) -> int:  # noqa: C901, P
             s3_bucket = existing_s3_bucket
             logger.info(f"Using existing S3 bucket: {s3_bucket}")
         else:
-            # No existing settings - use provided or generate new
             s3_bucket = (
                 args.s3_bucket if hasattr(args, "s3_bucket") and args.s3_bucket else generate_unique_bucket_name()
             )
@@ -246,7 +241,6 @@ def handle_prepare_dockerfile(args: argparse.Namespace) -> int:  # noqa: C901, P
         # Determine auth token (immutable once set)
         auth_token_is_new = False
         if existing_auth_token:
-            # Token already exists - cannot be changed
             if args.auth_token and args.auth_token != existing_auth_token:
                 error_msg = (
                     f"Cannot change auth token for existing model.\n"
@@ -258,21 +252,16 @@ def handle_prepare_dockerfile(args: argparse.Namespace) -> int:  # noqa: C901, P
             auth_token = existing_auth_token
             logger.info("Using existing auth token")
         else:
-            # No existing token - use provided or generate new (256 bits of randomness)
             auth_token = args.auth_token if args.auth_token else secrets.token_urlsafe(32)
             auth_token_is_new = not args.auth_token
             if auth_token_is_new:
                 logger.info("Generated new secure authentication token")
 
-        model_cache_dir = prepare_deployment_files(
-            model_name=args.model,
-            cache_dir=cache_dir,
-            project_name=get_effective_project_name(args),
+        # Prepare deployment files using DeploymentManager
+        model_cache_dir = manager.prepare(
             auth_token=auth_token,
-            aws_region=args.region,
-            tags=tags,
             s3_bucket=s3_bucket,
-            stage=stage,
+            tags=tags,
             memory_size=args.memory_size,
             system_prompt=system_prompt,
         )
@@ -340,12 +329,17 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
 
         logger.info(f"Deploying model: {model_name}")
 
-        # Get model-stage-specific cache directory
-        model_cache_dir = get_model_cache_dir(cache_dir, model_name, stage)
-        zappa_settings = model_cache_dir / "zappa_settings.json"
+        # Create DeploymentManager
+        manager = DeploymentManager(
+            model_name=model_name,
+            cache_dir=cache_dir,
+            project_name=get_effective_project_name(args),
+            stage=stage,
+            region=args.region,
+        )
 
         # Check if preparation is needed
-        if not zappa_settings.exists():
+        if not manager.is_prepared:
             logger.info(f"Deployment files not found. Preparing model: {model_name}")
             print(f"Preparing deployment files for model: {model_name}...")
 
@@ -394,15 +388,10 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
                 logger.info("Generated new secure authentication token")
 
             try:
-                model_cache_dir = prepare_deployment_files(
-                    model_name=model_name,
-                    cache_dir=cache_dir,
-                    project_name=get_effective_project_name(args),
+                model_cache_dir = manager.prepare(
                     auth_token=auth_token,
-                    aws_region=args.region,
-                    tags=tags,
                     s3_bucket=s3_bucket,
-                    stage=stage,
+                    tags=tags,
                     memory_size=args.memory_size,
                     system_prompt=system_prompt,
                 )
@@ -422,8 +411,8 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
                 print(f"Error: {e}", file=sys.stderr)
                 return 1
 
-        logger.info(f"Using zappa_settings.json from: {zappa_settings}")
-        logger.info(f"Working directory: {model_cache_dir}")
+        logger.info(f"Using zappa_settings.json from: {manager.zappa_settings_path}")
+        logger.info(f"Working directory: {manager.model_cache_dir}")
 
         # Determine auth token - use provided token or get from config
         auth_token = args.auth_token
@@ -442,109 +431,19 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
                 print(f"Error: {error_msg}", file=sys.stderr)
                 return 1
 
-        # Set auth token in environment
-        import os
-
-        env = os.environ.copy()
-        env["API_KEY"] = auth_token
-        logger.info("Auth token set in environment")
-
         # Build and push Docker image to ECR
         print("\n" + "=" * 80)
         print("Building and pushing Docker image to ECR")
         print("=" * 80)
 
         try:
-            # Get AWS region from zappa settings
-            with zappa_settings.open() as f:
-                settings_data = json.load(f)
-            aws_region = settings_data.get("dev", {}).get("aws_region", REGION)
-
-            # Create ECR repository and build/push image
-            import boto3
-
-            from merle.functions import normalize_model_name
-
-            normalized_name = normalize_model_name(model_name)
-            ecr_repo_name = f"merle-{normalized_name}"
-
-            # Create ECR client
-            ecr_client = boto3.client("ecr", region_name=aws_region)
-
-            # Create repository if it doesn't exist
-            try:
-                logger.info(f"Creating ECR repository: {ecr_repo_name}")
-                ecr_client.create_repository(
-                    repositoryName=ecr_repo_name,
-                    imageScanningConfiguration={"scanOnPush": True},
-                )
-                print(f"✓ Created ECR repository: {ecr_repo_name}")
-            except ecr_client.exceptions.RepositoryAlreadyExistsException:
-                logger.info(f"ECR repository already exists: {ecr_repo_name}")
-                print(f"✓ ECR repository already exists: {ecr_repo_name}")
-
-            # Get repository URI
-            response = ecr_client.describe_repositories(repositoryNames=[ecr_repo_name])
-            repo_uri = response["repositories"][0]["repositoryUri"]
-            image_uri = f"{repo_uri}:latest"
-            logger.info(f"ECR image URI: {image_uri}")
-
-            # Authenticate Docker to ECR using boto3 (works better with MFA-cached credentials)
-            print("Authenticating with ECR...")
-            auth_response = ecr_client.get_authorization_token()
-            auth_token_ecr = auth_response["authorizationData"][0]["authorizationToken"]
-            ecr_endpoint = auth_response["authorizationData"][0]["proxyEndpoint"]
-
-            # Decode auth token (it's base64 encoded "AWS:password")
-            username, password = base64.b64decode(auth_token_ecr).decode().split(":")
-
-            # Docker login to ECR
-            docker_login_cmd = ["docker", "login", "--username", username, "--password-stdin", ecr_endpoint]
-            subprocess.run(
-                docker_login_cmd,
-                input=password.encode(),
-                check=True,
-                capture_output=True,
-            )
-            print("✓ Authenticated with ECR")
-
-            # Build Docker image
-            print(f"Building Docker image: {image_uri}")
-            docker_build_cmd = ["docker", "build", "-t", image_uri, "."]
-            logger.info(f"Running: {' '.join(docker_build_cmd)}")
-            result = subprocess.run(
-                docker_build_cmd,
-                cwd=model_cache_dir,
-                check=True,
-                capture_output=False,
-            )
-            print(f"✓ Built Docker image: {image_uri}")
-
-            # Push Docker image to ECR
-            print("Pushing Docker image to ECR...")
-            docker_push_cmd = ["docker", "push", image_uri]
-            logger.info(f"Running: {' '.join(docker_push_cmd)}")
-            result = subprocess.run(
-                docker_push_cmd,
-                cwd=model_cache_dir,
-                check=True,
-                capture_output=False,
-            )
-            print(f"✓ Pushed Docker image to ECR: {image_uri}")
-
-            # Update zappa_settings.json with docker_image_uri
-            settings_data["dev"]["docker_image_uri"] = image_uri
-            with zappa_settings.open("w") as f:
-                json.dump(settings_data, f, indent=4, sort_keys=True)
-            logger.info(f"Updated zappa_settings.json with docker_image_uri: {image_uri}")
-            print("✓ Updated zappa_settings.json with docker_image_uri")
-
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Docker command failed: {e}"
-            logger.error(error_msg)
-            print(f"Error: {error_msg}", file=sys.stderr)
+            image_uri = manager.build_and_push_docker_image()
+            print(f"✓ Built and pushed Docker image: {image_uri}")
+        except RuntimeError as e:
+            logger.error(str(e))
+            print(f"Error: {e}", file=sys.stderr)
             return 1
-        except (OSError, ValueError, KeyError, json.JSONDecodeError) as e:
+        except Exception as e:  # noqa: BLE001
             error_msg = f"Failed to build/push Docker image: {e}"
             logger.error(error_msg)
             print(f"Error: {error_msg}", file=sys.stderr)
@@ -552,64 +451,10 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
 
         print("=" * 80 + "\n")
 
-        # Run zappa deploy from the model cache directory with Docker image URI
-        # Retry logic for IAM role propagation delay
-        max_retries = 3
-        retry_delay = 15  # seconds
-        cmd = ["zappa", "deploy", "dev", "--docker-image-uri", image_uri]
-
-        for attempt in range(1, max_retries + 1):
-            logger.info(f"Running (attempt {attempt}/{max_retries}): {' '.join(cmd)}")
-            if attempt == 1:
-                print(f"Deploying with Zappa: {' '.join(cmd)}")
-            else:
-                print(f"Retrying deployment (attempt {attempt}/{max_retries})...")
-
-            result = subprocess.run(
-                cmd,
-                env=env,
-                cwd=model_cache_dir,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-
-            if result.returncode == 0:
-                # Print stdout for successful deployment
-                if result.stdout:
-                    print(result.stdout)
-                break
-
-            # Check if this is an IAM role propagation error
-            error_output = result.stderr or result.stdout or ""
-            is_role_propagation_error = "role defined for the function cannot be assumed by Lambda" in error_output
-
-            if is_role_propagation_error and attempt < max_retries:
-                logger.warning(f"IAM role propagation delay detected, retrying in {retry_delay}s...")
-                print(f"\nAWS IAM role propagation delay detected. Waiting {retry_delay} seconds before retry...")
-                time.sleep(retry_delay)
-                continue
-
-            # Print output for failed attempts
-            if result.stdout:
-                print(result.stdout)
-            if result.stderr:
-                print(result.stderr, file=sys.stderr)
-            break
-
-        if result.returncode == 0:
-            # Get deployment URL and save to config
-            deployment_url = get_deployment_url(model_cache_dir)
-            if deployment_url:
-                from merle.functions import update_model_config
-
-                update_model_config(
-                    cache_dir=cache_dir,
-                    model_name=model_name,
-                    url=deployment_url,
-                    stage=stage,
-                )
-                logger.info(f"Saved deployment URL to config: {deployment_url}")
+        # Deploy using Zappa
+        print("Deploying with Zappa...")
+        try:
+            deployment_url = manager.deploy(auth_token=auth_token)
 
             print("\nDeployment successful!")
             print("Your Ollama model server is now available on AWS Lambda.")
@@ -622,9 +467,10 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
             print(f"  uvx merle chat --model {model_name}")
             return 0
 
-        logger.error(f"Deployment failed with exit code: {result.returncode}")
-        print(f"\nDeployment failed with exit code: {result.returncode}", file=sys.stderr)
-        return 1
+        except RuntimeError as e:
+            logger.error(str(e))
+            print(f"\nDeployment failed: {e}", file=sys.stderr)
+            return 1
 
     except FileNotFoundError:
         error_msg = "Zappa not found. Please install it: uv add zappa"
@@ -674,12 +520,16 @@ def handle_list(args: argparse.Namespace) -> int:  # noqa: PLR0912, C901
         print("=" * 130)
 
         for model_name, stage, model_config in model_stage_list:
-            # Get model cache directory
-            model_cache_dir = get_model_cache_dir(cache_dir, model_name, stage)
+            # Create a DeploymentManager for this model/stage
+            manager = DeploymentManager(
+                model_name=model_name,
+                cache_dir=cache_dir,
+                project_name=get_effective_project_name(args),
+                stage=stage,
+            )
 
             # Check if deployment files exist
-            zappa_settings = model_cache_dir / "zappa_settings.json"
-            status = "Configured" if zappa_settings.exists() else "Not prepared"
+            status = "Configured" if manager.is_prepared else "Not prepared"
 
             # Get region
             region = model_config.get("region", "N/A")
@@ -692,13 +542,11 @@ def handle_list(args: argparse.Namespace) -> int:  # noqa: PLR0912, C901
             # Get system prompt (truncate if too long)
             system_prompt = model_config.get("system_prompt")
             if system_prompt:
-                # Show first N-3 chars + "..." if longer than max display length
                 max_len = MAX_SYSTEM_PROMPT_DISPLAY_LENGTH
                 if len(system_prompt) > max_len:
                     system_prompt_display = system_prompt[: max_len - 3] + "..."
                 else:
                     system_prompt_display = system_prompt
-                # Replace newlines with space for display
                 system_prompt_display = system_prompt_display.replace("\n", " ")
             else:
                 system_prompt_display = "Not configured"
@@ -711,7 +559,7 @@ def handle_list(args: argparse.Namespace) -> int:  # noqa: PLR0912, C901
                 if args.check_urls:
                     # Verify deployment status by querying AWS
                     logger.info(f"Checking deployment status for {model_name} (stage: {stage})...")
-                    deployment_url = get_deployment_url(model_cache_dir)
+                    deployment_url = manager.get_deployment_url()
                     if deployment_url:
                         url = deployment_url
                         status = "Deployed"
@@ -749,7 +597,7 @@ def handle_list(args: argparse.Namespace) -> int:  # noqa: PLR0912, C901
         return 1
 
 
-def handle_destroy(args: argparse.Namespace) -> int:
+def handle_destroy(args: argparse.Namespace) -> int:  # noqa: C901
     """
     Handle the destroy command.
 
@@ -776,18 +624,22 @@ def handle_destroy(args: argparse.Namespace) -> int:
         stage = args.stage
         logger.info(f"Destroying deployment for model: {model_name}, stage: {stage}")
 
-        # Get model-stage-specific cache directory
-        model_cache_dir = get_model_cache_dir(cache_dir, model_name, stage)
-        zappa_settings = model_cache_dir / "zappa_settings.json"
+        # Create DeploymentManager
+        manager = DeploymentManager(
+            model_name=model_name,
+            cache_dir=cache_dir,
+            project_name=get_effective_project_name(args),
+            stage=stage,
+        )
 
-        if not zappa_settings.exists():
+        if not manager.is_prepared:
             error_msg = f"No deployment found for model: {model_name}, stage: {stage}"
             logger.error(error_msg)
             print(f"Error: {error_msg}", file=sys.stderr)
             return 1
 
-        logger.info(f"Using zappa_settings.json from: {zappa_settings}")
-        logger.info(f"Working directory: {model_cache_dir}")
+        logger.info(f"Using zappa_settings.json from: {manager.zappa_settings_path}")
+        logger.info(f"Working directory: {manager.model_cache_dir}")
 
         # Ask for confirmation
         if not args.yes:
@@ -796,51 +648,20 @@ def handle_destroy(args: argparse.Namespace) -> int:
                 print("Aborted.")
                 return 0
 
-        # Run zappa undeploy (pass --yes to skip Zappa's confirmation)
-        # User has already confirmed via --yes flag or by answering the prompt
-        cmd = ["zappa", "undeploy", "dev", "--yes"]
+        print(f"Tearing down deployment for model: {model_name}, stage: {stage}")
 
-        logger.info(f"Running: {' '.join(cmd)}")
-        print(f"Tearing down deployment: {' '.join(cmd)}")
+        # Use DeploymentManager to destroy
+        success = manager.destroy(skip_confirmation=True)
 
-        result = subprocess.run(
-            cmd,
-            cwd=model_cache_dir,
-            check=False,
-            capture_output=False,
-        )
-
-        # Check if undeploy succeeded or if there were no AWS resources to remove
-        if result.returncode == 0:
+        if success:
             print("\nDeployment successfully torn down!")
         else:
-            # Zappa undeploy failed - likely because resources don't exist
-            logger.warning(f"Zappa undeploy failed with exit code: {result.returncode}")
             print(
-                f"\nWarning: Zappa undeploy returned exit code {result.returncode}. "
+                "\nWarning: Zappa undeploy may have encountered issues. "
                 "This may indicate that AWS resources were already removed or never existed."
             )
-            print("Proceeding to clean up local files...")
 
-        # Clean up local files regardless of zappa undeploy result
-        logger.info(f"Cleaning up local files for model: {model_name}, stage: {stage}")
-
-        # Remove model-stage entry from config
-        config = load_config(cache_dir)
-        if model_name in config.get("models", {}) and stage in config["models"][model_name]:
-            del config["models"][model_name][stage]
-            # If no more stages for this model, remove the model entirely
-            if not config["models"][model_name]:
-                del config["models"][model_name]
-            save_config(cache_dir, config)
-            logger.info(f"Removed {model_name} (stage: {stage}) from configuration")
-
-        # Delete model cache directory
-        if model_cache_dir.exists():
-            shutil.rmtree(model_cache_dir)
-            logger.info(f"Deleted model cache directory: {model_cache_dir}")
-            print(f"Cleaned up local files in: {model_cache_dir}")
-
+        print(f"Cleaned up local files in: {manager.model_cache_dir}")
         print(f"\nModel '{model_name}' (stage: {stage}) has been completely removed.")
         return 0
 
@@ -882,11 +703,15 @@ def handle_chat(args: argparse.Namespace) -> int:
         stage = args.stage
         logger.info(f"Connecting to model: {model_name}, stage: {stage}")
 
-        # Get model-stage-specific cache directory
-        model_cache_dir = get_model_cache_dir(cache_dir, model_name, stage)
-        zappa_settings = model_cache_dir / "zappa_settings.json"
+        # Create DeploymentManager
+        manager = DeploymentManager(
+            model_name=model_name,
+            cache_dir=cache_dir,
+            project_name=get_effective_project_name(args),
+            stage=stage,
+        )
 
-        if not zappa_settings.exists():
+        if not manager.is_prepared:
             error_msg = (
                 f"Model not prepared: {model_name}, stage: {stage}. "
                 f"Run 'merle prepare --model {model_name} --stage {stage}' first."
@@ -897,7 +722,7 @@ def handle_chat(args: argparse.Namespace) -> int:
 
         # Get deployment URL
         logger.info("Checking deployment status...")
-        deployment_url = get_deployment_url(model_cache_dir)
+        deployment_url = manager.get_deployment_url()
 
         if not deployment_url:
             error_msg = (

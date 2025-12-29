@@ -449,11 +449,10 @@ class TestDockerBuildProcess:
             file_path = model_dir / filename
             assert file_path.exists(), f"{filename} should be copied to model directory"
 
-        # Check that merle/ directory was copied
-        merle_dir = model_dir / "merle"
-        assert merle_dir.exists(), "merle/ directory should be copied"
-        assert (merle_dir / "app.py").exists(), "merle/app.py should be copied"
-        assert (merle_dir / "settings.py").exists(), "merle/settings.py should be copied"
+        # Check that models/ directory with pre-downloaded model exists
+        # Note: merle/ package is installed during Docker build via uv sync, not copied
+        models_dir = model_dir / "models"
+        assert models_dir.exists(), "models/ directory should be created with pre-downloaded model"
 
     def test_zappa_settings_valid_json(self, deployment_files: dict[str, Any]) -> None:
         """Test that zappa_settings.json is valid JSON."""

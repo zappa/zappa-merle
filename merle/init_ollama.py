@@ -1,5 +1,6 @@
 """Initialize Ollama server for Lambda deployment."""
 
+import json
 import logging
 import os
 import subprocess
@@ -15,8 +16,83 @@ logger = logging.getLogger(__name__)
 # HTTP status code constant
 HTTP_OK = 200
 
+# Split model metadata filename
+SPLIT_METADATA_FILE = "split_metadata.json"
 
-def start_ollama_server() -> subprocess.Popen | None:
+
+def is_split_model_mode() -> bool:
+    """
+    Check if running in split model mode.
+
+    Split model mode is indicated by:
+    1. MERLE_SPLIT_MODEL environment variable set to 'true'
+    2. split_metadata.json exists in the models directory
+
+    Returns:
+        True if using split model deployment
+    """
+    if os.environ.get("MERLE_SPLIT_MODEL", "").lower() == "true":
+        return True
+
+    source_models = Path("/var/task/models")
+    metadata_path = source_models / SPLIT_METADATA_FILE
+    return metadata_path.exists()
+
+
+def reassemble_split_model() -> bool:
+    """
+    Reassemble a split model at Lambda cold start.
+
+    Downloads Part 2 from S3 and combines with Part 1 from the image.
+
+    Returns:
+        True if successful or not needed, False on failure
+    """
+    source_models = Path("/var/task/models")
+    target_models = Path("/tmp/models")  # noqa: S108 - Lambda writable directory
+    metadata_path = source_models / SPLIT_METADATA_FILE
+
+    if not metadata_path.exists():
+        logger.debug("No split metadata found, skipping reassembly")
+        return True
+
+    # Check if already reassembled
+    if target_models.exists():
+        blobs_dir = target_models / "blobs"
+        if blobs_dir.exists() and any(blobs_dir.iterdir()):
+            logger.info("Model already reassembled, skipping")
+            return True
+
+    logger.info("Split model detected, starting reassembly...")
+
+    try:
+        with metadata_path.open() as f:
+            metadata = json.load(f)
+
+        if not metadata.get("split_required"):
+            logger.debug("Split not required per metadata")
+            return True
+
+        # Import here to avoid circular imports
+        from merle.model_split import reassemble_at_runtime  # noqa: PLC0415
+
+        region = os.environ.get("AWS_REGION") or metadata.get("s3", {}).get("region", "us-east-1")
+
+        success = reassemble_at_runtime(source_models, target_models, region)
+
+        if success:
+            logger.info("Model reassembly completed successfully")
+        else:
+            logger.error("Model reassembly failed")
+
+    except Exception:
+        logger.exception("Error during model reassembly")
+        return False
+    else:
+        return success
+
+
+def start_ollama_server() -> subprocess.Popen | None:  # noqa: C901, PLR0912, PLR0915
     """
     Start Ollama server in the background.
 
@@ -24,8 +100,19 @@ def start_ollama_server() -> subprocess.Popen | None:
         Popen object of the running server, or None if failed
     """
     try:
-        # In Lambda, create hybrid setup: symlink blobs from /var/task, use /tmp for writable files
-        if settings.is_lambda():
+        # Handle different deployment modes
+        if is_split_model_mode():
+            # Split model mode: reassemble from image + S3
+            logger.info("Running in split model mode")
+            if not reassemble_split_model():
+                logger.error("Failed to reassemble split model")
+                return None
+            # After reassembly, models are in /tmp/models
+            # Update OLLAMA_MODELS env for this process
+            os.environ["OLLAMA_MODELS"] = "/tmp/models"  # noqa: S108
+        elif settings.is_lambda():
+            # Baked model mode: create hybrid setup
+            # Symlink blobs from /var/task, use /tmp for writable files
             import shutil  # noqa: PLC0415
 
             source_models = Path("/var/task/models")

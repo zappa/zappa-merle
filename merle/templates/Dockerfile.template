@@ -9,9 +9,9 @@ ENV PYTHONUNBUFFERED=1 \
     ZAPPA_RUNNING_IN_DOCKER=True \
     OLLAMA_HOST=http://localhost:11434 \
     OLLAMA_URL=http://localhost:11434 \
-    OLLAMA_MODELS=/var/task/models \
+    OLLAMA_MODELS={{OLLAMA_MODELS_PATH}} \
     OLLAMA_MODEL={{OLLAMA_MODEL}} \
-    LOG_LEVEL=INFO \
+{{SPLIT_MODEL_ENV}}    LOG_LEVEL=INFO \
     PATH="/var/task/bin:${PATH}"
 
 # uv environment variables for system-wide installation
@@ -53,23 +53,14 @@ COPY authorizer.py ${FUNCTION_DIR}/
 COPY zappa_settings.json ${FUNCTION_DIR}/
 RUN uv run zappa save-python-settings-file dev -o ${FUNCTION_DIR}/zappa_settings.py
 
-# Create models directory
-RUN mkdir -p /var/task/models && chmod 777 /var/task/models
+# Copy the pre-prepared model files
+COPY models/ /var/task/models/
 
-# Pre-download the Ollama model to bake into our image
-# This increases image size significantly (~2GB+) but improves performance
-# Note: 'ollama pull' requires a running ollama server, so we start a temporary
-# server during the build, pull the model, then kill it. The actual Lambda function
-# will start its own ollama server at runtime.
-RUN ollama serve & \
-    OLLAMA_PID=$! && \
-    echo "Waiting for Ollama server to start..." && \
-    sleep 10 && \
-    echo "Pulling model: ${OLLAMA_MODEL}" && \
-    ollama pull ${OLLAMA_MODEL} && \
-    echo "Model pulled successfully" && \
-    kill -9 ${OLLAMA_PID} 2>/dev/null || true && \
-    sleep 2
+# Verify model files are present
+RUN echo "Model files in image:" && \
+    ls -la /var/task/models/ && \
+    ls -la /var/task/models/blobs/ 2>/dev/null || echo "No blobs directory" && \
+    ls -la /var/task/models/manifests/ 2>/dev/null || echo "No manifests directory"{{SPLIT_METADATA_CHECK}}
 
 # Extract Zappa handler and place it in the working directory
 RUN ZAPPA_HANDLER_PATH=$( \

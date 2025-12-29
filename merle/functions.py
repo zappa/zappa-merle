@@ -384,7 +384,7 @@ def get_deployment_url(model_cache_dir: Path) -> str | None:  # noqa: PLR0911
         return None
 
 
-def update_model_config(
+def update_model_config(  # noqa: C901, PLR0912
     cache_dir: Path,
     model_name: str,
     auth_token: str | None = None,
@@ -394,6 +394,8 @@ def update_model_config(
     stage: str = "dev",
     system_prompt: str | None = None,
     context_window_size: int | None = None,
+    use_split: bool | None = None,
+    split_config: dict | None = None,
 ) -> None:
     """
     Update the configuration for a specific model-stage combination.
@@ -408,6 +410,8 @@ def update_model_config(
         stage: Deployment stage (default: 'dev')
         system_prompt: Optional system prompt for chat context
         context_window_size: Optional context window size in tokens
+        use_split: Optional flag indicating if split model mode is used
+        split_config: Optional split model configuration dict
     """
     config = load_config(cache_dir)
     normalized_name = normalize_model_name(model_name)
@@ -436,6 +440,10 @@ def update_model_config(
         model_config["system_prompt"] = system_prompt
     if context_window_size is not None:
         model_config["context_window_size"] = context_window_size
+    if use_split is not None:
+        model_config["use_split"] = use_split
+    if split_config is not None:
+        model_config["split"] = split_config
 
     save_config(cache_dir, config)
     logger.info(f"Updated configuration for model: {model_name}, stage: {stage}")
@@ -584,6 +592,8 @@ def _generate_zappa_settings(
     stage: str = "dev",
     memory_size: int = 8192,
     context_window_size: int | None = None,
+    use_split: bool = False,
+    ephemeral_storage: int = 5120,
 ) -> None:
     """
     Generate zappa_settings.json using Zappa's Python API.
@@ -601,8 +611,11 @@ def _generate_zappa_settings(
         stage: Zappa deployment stage (default: 'dev')
         memory_size: Lambda function memory size in MB (default: 8192)
         context_window_size: Optional context window size in tokens
+        use_split: Whether to use split model mode (default: False)
+        ephemeral_storage: Ephemeral storage in MB (default: 5120)
     """
-    logger.info(f"Generating {output_path} using Zappa Python API for stage '{stage}'")
+    mode_str = " (split mode)" if use_split else ""
+    logger.info(f"Generating {output_path} using Zappa Python API for stage '{stage}'{mode_str}")
 
     # Create ZappaCLI instance
     cli = ZappaCLI()
@@ -624,10 +637,12 @@ def _generate_zappa_settings(
     }
 
     # Build environment variables
+    # Models are in Docker image and copied/reassembled to /tmp/models at runtime
+    models_path = "/tmp/models"  # noqa: S108
     env_vars = {
         "OLLAMA_MODEL": model_name,
         "OLLAMA_URL": "http://localhost:11434",
-        "OLLAMA_MODELS": "/tmp/models",  # noqa: S108 - Lambda writable directory
+        "OLLAMA_MODELS": models_path,
         "OLLAMA_STARTUP_TIMEOUT": "120",
         "ZAPPA_RUNNING_IN_DOCKER": "True",
         "API_KEY": auth_token,
@@ -636,6 +651,12 @@ def _generate_zappa_settings(
     # Add context window size if provided
     if context_window_size:
         env_vars["OLLAMA_MODEL_CONTEXT_WINDOW_SIZE"] = str(context_window_size)
+
+    # Add split model indicator
+    if use_split:
+        env_vars["MERLE_SPLIT_MODEL"] = "true"
+        # Increase startup timeout for S3 download
+        env_vars["OLLAMA_STARTUP_TIMEOUT"] = "300"
 
     stage_config.update(
         {
@@ -646,7 +667,7 @@ def _generate_zappa_settings(
             "memory_size": memory_size,
             "timeout_seconds": 900,
             "environment_variables": env_vars,
-            "ephemeral_storage": {"Size": 5120},
+            "ephemeral_storage": {"Size": ephemeral_storage},
             "keep_warm": False,
             "keep_warm_expression": "rate(4 minutes)",
             "authorizer": authorizer_config,
@@ -657,6 +678,18 @@ def _generate_zappa_settings(
         }
     )
 
+    # Add S3 permissions for split model mode
+    if use_split:
+        extra_permissions = [
+            {
+                "Effect": "Allow",
+                "Action": ["s3:GetObject", "s3:HeadObject"],
+                "Resource": f"arn:aws:s3:::{s3_bucket}/merle-models/*",
+            }
+        ]
+        stage_config["extra_permissions"] = extra_permissions
+        logger.info("Added S3 permissions for split model download")
+
     # Write to file
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w") as f:
@@ -665,7 +698,7 @@ def _generate_zappa_settings(
     logger.info(f"Successfully generated {output_path} for stage '{stage}'")
 
 
-def prepare_deployment_files(
+def prepare_deployment_files(  # noqa: PLR0915
     model_name: str,
     cache_dir: Path,
     project_name: str,
@@ -676,9 +709,16 @@ def prepare_deployment_files(
     stage: str = "dev",
     memory_size: int = 8192,
     system_prompt: str | None = None,
+    skip_model_download: bool = False,
 ) -> Path:
     """
     Prepare all necessary files for deployment.
+
+    This function automatically handles model size detection and splitting:
+    - Downloads the model using local Ollama
+    - Calculates if the model fits in a Docker image (~8GB limit)
+    - If too large, splits the model and uploads overflow to S3
+    - Generates appropriate Dockerfile (standard or split mode)
 
     Args:
         model_name: Name of the Ollama model to deploy
@@ -691,6 +731,7 @@ def prepare_deployment_files(
         stage: Deployment stage (default: 'dev')
         memory_size: Lambda function memory size in MB (default: 8192)
         system_prompt: Optional system prompt for chat context
+        skip_model_download: Skip model download (for testing, default: False)
 
     Returns:
         Path to the model-stage-specific cache directory where files were created
@@ -731,7 +772,67 @@ def prepare_deployment_files(
         "TAGS_JSON": json.dumps(tags_dict),
     }
 
-    # Generate Dockerfile
+    # Determine if we need to download and potentially split the model
+    use_split = False
+    split_metadata = None
+
+    if not skip_model_download:
+        # Import model splitting module (here to avoid circular imports at module load)
+        from merle.model_split import (  # noqa: PLC0415
+            calculate_model_size,
+            copy_model_to_output,
+            download_model_locally,
+            needs_splitting,
+            prepare_split_model,
+        )
+
+        # Download the model using local Ollama
+        logger.info(f"Downloading model {model_name} using local Ollama...")
+        try:
+            download_model_locally(model_name)
+        except RuntimeError as e:
+            logger.error(f"Failed to download model: {e}")
+            raise ValueError(f"Failed to download model: {e}") from e
+
+        # Calculate model size
+        total_size, size_details = calculate_model_size(model_name)
+        logger.info(f"Model size: {size_details['total_size_gb']} GB")
+
+        # Check if splitting is needed
+        if needs_splitting(total_size):
+            use_split = True
+            logger.info("Model exceeds Docker image limit, preparing split deployment...")
+
+            # Prepare split model (downloads to S3, creates part files)
+            split_metadata = prepare_split_model(
+                model_name=model_name,
+                output_dir=model_cache_dir,
+                s3_bucket=s3_bucket,
+                region=region,
+            )
+
+            logger.info("Split model prepared:")
+            logger.info(f"  - Image portion: {split_metadata['image_portion_bytes'] / (1024**3):.2f} GB")
+            logger.info(f"  - S3 portion: {split_metadata['s3_portion_bytes'] / (1024**3):.2f} GB")
+            logger.info(f"  - S3 URI: {split_metadata['s3']['uri']}")
+        else:
+            logger.info("Model fits in Docker image, using standard deployment")
+            # Copy model files to output directory for Docker image inclusion
+            copy_model_to_output(model_name, model_cache_dir)
+
+    # Add split-specific replacements for Dockerfile template
+    if use_split:
+        replacements["OLLAMA_MODELS_PATH"] = "/tmp/models"  # noqa: S108
+        replacements["SPLIT_MODEL_ENV"] = "    MERLE_SPLIT_MODEL=true \\\n"
+        replacements["SPLIT_METADATA_CHECK"] = (
+            ' && \\\n    cat /var/task/models/split_metadata.json 2>/dev/null || echo "No split metadata"'
+        )
+    else:
+        replacements["OLLAMA_MODELS_PATH"] = "/var/task/models"
+        replacements["SPLIT_MODEL_ENV"] = ""
+        replacements["SPLIT_METADATA_CHECK"] = ""
+
+    # Generate Dockerfile from template
     generate_from_template(
         template_path=template_dir / "Dockerfile.template",
         output_path=model_cache_dir / "Dockerfile",
@@ -747,6 +848,17 @@ def prepare_deployment_files(
     # Get context window size for the model
     context_window_size = get_model_context_window_size(model_name)
 
+    # Calculate ephemeral storage needed
+    # For split models, we need space for reassembly
+    ephemeral_storage = 5120  # Default 5GB
+    if use_split and split_metadata:
+        # Need enough space for the full model in /tmp
+        total_gb = split_metadata["total_size_gb"]
+        # Add 20% buffer and round up to nearest 512MB
+        needed_mb = int((total_gb * 1024 * 1.2 + 511) // 512 * 512)
+        ephemeral_storage = min(max(needed_mb, 5120), 10240)  # Clamp to 5-10GB
+        logger.info(f"Setting ephemeral storage to {ephemeral_storage} MB for split model")
+
     # Generate main zappa_settings.json using Zappa Python API
     # Uses embedded authorizer (authorizer.lambda_handler function in same Lambda)
     _generate_zappa_settings(
@@ -759,6 +871,8 @@ def prepare_deployment_files(
         project_name=project_name,
         memory_size=memory_size,
         context_window_size=context_window_size,
+        use_split=use_split,
+        ephemeral_storage=ephemeral_storage,
     )
 
     # Copy pyproject.toml from consuming project (where CLI is run)
@@ -784,6 +898,8 @@ def prepare_deployment_files(
         stage=stage,
         system_prompt=system_prompt,
         context_window_size=context_window_size,
+        use_split=use_split,
+        split_config=split_metadata,
     )
 
     logger.info(f"Successfully prepared deployment files in {model_cache_dir}")
