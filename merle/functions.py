@@ -698,7 +698,7 @@ def _generate_zappa_settings(
     logger.info(f"Successfully generated {output_path} for stage '{stage}'")
 
 
-def prepare_deployment_files(  # noqa: PLR0915
+def prepare_deployment_files(  # noqa: PLR0915, PLR0912
     model_name: str,
     cache_dir: Path,
     project_name: str,
@@ -775,6 +775,7 @@ def prepare_deployment_files(  # noqa: PLR0915
     # Determine if we need to download and potentially split the model
     use_split = False
     split_metadata = None
+    size_details: dict | None = None
 
     if not skip_model_download:
         # Import model splitting module (here to avoid circular imports at module load)
@@ -848,16 +849,19 @@ def prepare_deployment_files(  # noqa: PLR0915
     # Get context window size for the model
     context_window_size = get_model_context_window_size(model_name)
 
-    # Calculate ephemeral storage needed
-    # For split models, we need space for reassembly
-    ephemeral_storage = 5120  # Default 5GB
-    if use_split and split_metadata:
-        # Need enough space for the full model in /tmp
-        total_gb = split_metadata["total_size_gb"]
+    # Calculate ephemeral storage needed based on model size
+    # Lambda ephemeral storage (/tmp) ranges from 512 MB to 10,240 MB
+    if size_details:
+        model_size_gb = size_details["total_size_gb"]
         # Add 20% buffer and round up to nearest 512MB
-        needed_mb = int((total_gb * 1024 * 1.2 + 511) // 512 * 512)
-        ephemeral_storage = min(max(needed_mb, 5120), 10240)  # Clamp to 5-10GB
-        logger.info(f"Setting ephemeral storage to {ephemeral_storage} MB for split model")
+        needed_mb = int((model_size_gb * 1024 * 1.2 + 511) // 512 * 512)
+        # Clamp to Lambda limits: min 512 MB, max 10,240 MB
+        ephemeral_storage = min(max(needed_mb, 512), 10240)
+        logger.info(f"Setting ephemeral storage to {ephemeral_storage} MB for {model_size_gb:.2f} GB model")
+    else:
+        # Default when skip_model_download=True (model size unknown)
+        ephemeral_storage = 5120  # 5GB default
+        logger.info(f"Setting ephemeral storage to {ephemeral_storage} MB (default, model size unknown)")
 
     # Generate main zappa_settings.json using Zappa Python API
     # Uses embedded authorizer (authorizer.lambda_handler function in same Lambda)

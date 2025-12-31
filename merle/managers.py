@@ -183,8 +183,9 @@ class DeploymentManager:
         # Get context window size for the model
         context_window_size = get_model_context_window_size(self.model_name)
 
-        # Calculate ephemeral storage needed
-        ephemeral_storage = self._calculate_ephemeral_storage(use_split, split_metadata)
+        # Calculate ephemeral storage needed based on model size
+        model_size_gb = split_metadata.get("total_size_gb", 0) if split_metadata else 0
+        ephemeral_storage = self._calculate_ephemeral_storage(model_size_gb)
 
         # Generate zappa_settings.json
         self._generate_zappa_settings(
@@ -270,16 +271,29 @@ class DeploymentManager:
 
         logger.info("Model fits in Docker image, using standard deployment")
         copy_model_to_output(self.model_name, self.model_cache_dir)
-        return False, None
+        # Return size info for ephemeral storage calculation
+        return False, {"total_size_gb": size_details["total_size_gb"]}
 
-    def _calculate_ephemeral_storage(self, use_split: bool, split_metadata: dict | None) -> int:
-        """Calculate ephemeral storage needed for Lambda."""
-        ephemeral_storage = 5120  # Default 5GB
-        if use_split and split_metadata:
-            total_gb = split_metadata["total_size_gb"]
-            needed_mb = int((total_gb * 1024 * 1.2 + 511) // 512 * 512)
-            ephemeral_storage = min(max(needed_mb, 5120), 10240)
-            logger.info(f"Setting ephemeral storage to {ephemeral_storage} MB for split model")
+    def _calculate_ephemeral_storage(self, model_size_gb: float) -> int:
+        """
+        Calculate ephemeral storage needed for Lambda based on model size.
+
+        Lambda ephemeral storage (/tmp) ranges from 512 MB to 10,240 MB.
+        We need enough space for the model files at runtime.
+
+        Args:
+            model_size_gb: Model size in GB
+
+        Returns:
+            Ephemeral storage in MB (512-10240)
+        """
+        # Calculate needed storage: model size + 20% buffer, rounded up to nearest 512 MB
+        needed_mb = int((model_size_gb * 1024 * 1.2 + 511) // 512 * 512)
+
+        # Clamp to Lambda limits: min 512 MB, max 10,240 MB
+        ephemeral_storage = min(max(needed_mb, 512), 10240)
+
+        logger.info(f"Setting ephemeral storage to {ephemeral_storage} MB for {model_size_gb:.2f} GB model")
         return ephemeral_storage
 
     def _generate_zappa_settings(

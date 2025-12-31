@@ -101,14 +101,15 @@ def calculate_directory_size(path: Path) -> int:
     return total
 
 
-def find_largest_blob(models_dir: Path) -> tuple[Path, int] | None:
+def find_largest_blob(models_dir: Path, model_name: str | None = None) -> tuple[Path, int] | None:
     """
-    Find the largest blob file in the models directory.
+    Find the largest blob file for a model.
 
     Ollama stores model weights in the blobs directory as SHA256-named files.
 
     Args:
         models_dir: Path to the Ollama models directory
+        model_name: Optional model name to filter blobs (if None, searches all blobs)
 
     Returns:
         Tuple of (blob_path, size) or None if no blobs found
@@ -117,10 +118,22 @@ def find_largest_blob(models_dir: Path) -> tuple[Path, int] | None:
     if not blobs_dir.exists():
         return None
 
+    # If model name provided, get only that model's blobs
+    if model_name:
+        manifest_path = _get_model_manifest_path(model_name, models_dir)
+        if manifest_path:
+            digests = _get_model_blob_digests(manifest_path)
+            blob_files = [blobs_dir / digest for digest in digests if (blobs_dir / digest).exists()]
+        else:
+            # Fallback to all blobs if manifest not found
+            blob_files = [f for f in blobs_dir.iterdir() if f.is_file()]
+    else:
+        blob_files = [f for f in blobs_dir.iterdir() if f.is_file()]
+
     largest_blob = None
     largest_size = 0
 
-    for blob_file in blobs_dir.iterdir():
+    for blob_file in blob_files:
         if blob_file.is_file():
             size = blob_file.stat().st_size
             if size > largest_size:
@@ -199,22 +212,122 @@ def get_model_info(model_name: str) -> dict | None:
     return None
 
 
-def calculate_model_size(model_name: str) -> tuple[int, dict]:  # noqa: ARG001
+def _get_model_manifest_path(model_name: str, models_dir: Path) -> Path | None:
     """
-    Calculate the size of a model and return size details.
-
-    Note: model_name is currently unused but kept for future API compatibility
-    when we need to filter by specific model.
+    Get the manifest file path for a model.
 
     Args:
-        model_name: Name of the model (reserved for future use)
+        model_name: Ollama model name (e.g., "llama2", "llama2:7b", "user/model")
+        models_dir: Path to Ollama models directory
+
+    Returns:
+        Path to manifest file or None if not found
+    """
+    # Parse model name into components
+    # Format: [namespace/]model[:tag]
+    # Default namespace is "library", default tag is "latest"
+    parts = model_name.split(":")
+    name_part = parts[0]
+    tag = parts[1] if len(parts) > 1 else "latest"
+
+    if "/" in name_part:
+        namespace, model = name_part.split("/", 1)
+    else:
+        namespace = "library"
+        model = name_part
+
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / namespace / model / tag
+    if manifest_path.exists():
+        return manifest_path
+
+    return None
+
+
+def _get_model_blob_digests(manifest_path: Path) -> list[str]:
+    """
+    Parse a manifest file to get the list of blob digests.
+
+    Args:
+        manifest_path: Path to the manifest file
+
+    Returns:
+        List of blob digest strings (e.g., ["sha256-abc123..."])
+    """
+    with manifest_path.open() as f:
+        manifest = json.load(f)
+
+    digests = []
+
+    # Add config digest
+    config = manifest.get("config", {})
+    if "digest" in config:
+        # Convert sha256:abc to sha256-abc (file naming convention)
+        digests.append(config["digest"].replace(":", "-"))
+
+    # Add layer digests
+    for layer in manifest.get("layers", []):
+        if "digest" in layer:
+            digests.append(layer["digest"].replace(":", "-"))
+
+    return digests
+
+
+def calculate_model_size(model_name: str) -> tuple[int, dict]:
+    """
+    Calculate the size of a specific model and return size details.
+
+    Parses the model's manifest to find its blob references and sums
+    only those blobs, not the entire models directory.
+
+    Args:
+        model_name: Name of the model to calculate size for
 
     Returns:
         Tuple of (total_size_bytes, size_details_dict)
     """
     models_dir = get_ollama_models_dir()
 
-    # Calculate total size
+    # Try to find model manifest
+    manifest_path = _get_model_manifest_path(model_name, models_dir)
+
+    if manifest_path:
+        # Calculate size from manifest blob references
+        digests = _get_model_blob_digests(manifest_path)
+        blobs_dir = models_dir / "blobs"
+
+        total_size = 0
+        largest_blob_path = None
+        largest_blob_size = 0
+
+        for digest in digests:
+            blob_path = blobs_dir / digest
+            if blob_path.exists():
+                blob_size = blob_path.stat().st_size
+                total_size += blob_size
+                if blob_size > largest_blob_size:
+                    largest_blob_size = blob_size
+                    largest_blob_path = blob_path
+
+        size_details = {
+            "total_size_bytes": total_size,
+            "total_size_gb": round(total_size / (1024 * 1024 * 1024), 2),
+            "models_dir": str(models_dir),
+            "manifest_path": str(manifest_path),
+            "blob_count": len(digests),
+        }
+
+        if largest_blob_path:
+            size_details["largest_blob"] = {
+                "path": str(largest_blob_path),
+                "name": largest_blob_path.name,
+                "size_bytes": largest_blob_size,
+                "size_gb": round(largest_blob_size / (1024 * 1024 * 1024), 2),
+            }
+
+        return total_size, size_details
+
+    # Fallback: calculate entire directory size (legacy behavior)
+    logger.warning(f"Could not find manifest for {model_name}, calculating total directory size")
     total_size = calculate_directory_size(models_dir)
 
     # Find largest blob
@@ -482,9 +595,10 @@ def copy_model_to_output(model_name: str, output_dir: Path) -> dict:
     Copy model files to output directory for Docker image inclusion.
 
     Used when model fits in Docker image (no splitting needed).
+    Only copies the blobs referenced by the specific model, not all blobs.
 
     Args:
-        model_name: Ollama model name (for metadata only)
+        model_name: Ollama model name
         output_dir: Directory to store model files
 
     Returns:
@@ -495,20 +609,39 @@ def copy_model_to_output(model_name: str, output_dir: Path) -> dict:
 
     # Prepare output directories
     models_output = output_dir / "models"
-    models_output.mkdir(parents=True, exist_ok=True)
+    blobs_output = models_output / "blobs"
+    blobs_output.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Copying model files to {models_output}")
 
-    # Copy blobs and manifests
+    # Get model-specific blobs from manifest
+    manifest_path = _get_model_manifest_path(model_name, models_dir)
     blobs_src = models_dir / "blobs"
-    manifests_src = models_dir / "manifests"
 
-    if blobs_src.exists():
-        shutil.copytree(blobs_src, models_output / "blobs", dirs_exist_ok=True)
-        logger.info("Copied blobs directory")
-    if manifests_src.exists():
-        shutil.copytree(manifests_src, models_output / "manifests", dirs_exist_ok=True)
-        logger.info("Copied manifests directory")
+    if manifest_path:
+        # Copy only model-specific blobs
+        digests = _get_model_blob_digests(manifest_path)
+        for digest in digests:
+            src_blob = blobs_src / digest
+            if src_blob.exists():
+                shutil.copy2(src_blob, blobs_output / digest)
+        logger.info(f"Copied {len(digests)} model-specific blobs")
+
+        # Copy model-specific manifest
+        manifests_output = models_output / "manifests"
+        manifest_rel = manifest_path.relative_to(models_dir / "manifests")
+        dest_manifest = manifests_output / manifest_rel
+        dest_manifest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(manifest_path, dest_manifest)
+        logger.info(f"Copied manifest: {manifest_rel}")
+    else:
+        # Fallback: copy all blobs and manifests (legacy behavior)
+        logger.warning(f"Could not find manifest for {model_name}, copying all files")
+        if blobs_src.exists():
+            shutil.copytree(blobs_src, blobs_output, dirs_exist_ok=True)
+        manifests_src = models_dir / "manifests"
+        if manifests_src.exists():
+            shutil.copytree(manifests_src, models_output / "manifests", dirs_exist_ok=True)
 
     return {
         "split_required": False,
@@ -519,7 +652,7 @@ def copy_model_to_output(model_name: str, output_dir: Path) -> dict:
     }
 
 
-def prepare_split_model(
+def prepare_split_model(  # noqa: PLR0915
     model_name: str,
     output_dir: Path,
     s3_bucket: str,
@@ -529,6 +662,7 @@ def prepare_split_model(
     Prepare a model for split deployment.
 
     This is the main entry point for the prepare command.
+    Only copies blobs referenced by the specific model, not all blobs.
 
     Args:
         model_name: Ollama model name
@@ -542,26 +676,42 @@ def prepare_split_model(
     # Download the model
     models_dir = download_model_locally(model_name)
 
-    # Calculate size
+    # Calculate size (model-specific)
     total_size, size_details = calculate_model_size(model_name)
     logger.info(f"Model size: {size_details['total_size_gb']} GB")
 
     # Prepare output directories
     models_output = output_dir / "models"
-    models_output.mkdir(parents=True, exist_ok=True)
+    blobs_output = models_output / "blobs"
+    blobs_output.mkdir(parents=True, exist_ok=True)
+
+    # Get model-specific manifest and blobs
+    manifest_path = _get_model_manifest_path(model_name, models_dir)
+    blobs_src = models_dir / "blobs"
+
+    if not manifest_path:
+        raise RuntimeError(f"Could not find manifest for model {model_name}")
+
+    model_digests = _get_model_blob_digests(manifest_path)
 
     if not needs_splitting(total_size):
-        # Model fits in image - just copy it
+        # Model fits in image - just copy model-specific files
         logger.info("Model fits in Docker image, no splitting needed")
 
-        # Copy entire models directory
-        blobs_src = models_dir / "blobs"
-        manifests_src = models_dir / "manifests"
+        # Copy model-specific blobs
+        for digest in model_digests:
+            src_blob = blobs_src / digest
+            if src_blob.exists():
+                shutil.copy2(src_blob, blobs_output / digest)
+        logger.info(f"Copied {len(model_digests)} model-specific blobs")
 
-        if blobs_src.exists():
-            shutil.copytree(blobs_src, models_output / "blobs", dirs_exist_ok=True)
-        if manifests_src.exists():
-            shutil.copytree(manifests_src, models_output / "manifests", dirs_exist_ok=True)
+        # Copy model-specific manifest
+        manifests_output = models_output / "manifests"
+        manifest_rel = manifest_path.relative_to(models_dir / "manifests")
+        dest_manifest = manifests_output / manifest_rel
+        dest_manifest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(manifest_path, dest_manifest)
+        logger.info(f"Copied manifest: {manifest_rel}")
 
         return {
             "split_required": False,
@@ -574,9 +724,9 @@ def prepare_split_model(
     # Model needs splitting
     logger.info("Model exceeds Docker image limit, splitting required")
 
-    blob_info = find_largest_blob(models_dir)
+    blob_info = find_largest_blob(models_dir, model_name)
     if not blob_info:
-        raise RuntimeError("Could not find blob files in models directory")
+        raise RuntimeError("Could not find blob files for model")
 
     blob_path, blob_size = blob_info
     image_portion, s3_portion = calculate_split_sizes(total_size)
@@ -595,19 +745,19 @@ def prepare_split_model(
     # Split the blob
     split_metadata = split_blob_file(blob_path, blob_image_portion, output_dir)
 
-    # Copy manifests (small, always fit)
-    manifests_src = models_dir / "manifests"
-    if manifests_src.exists():
-        shutil.copytree(manifests_src, models_output / "manifests", dirs_exist_ok=True)
+    # Copy model-specific manifest
+    manifests_output = models_output / "manifests"
+    manifest_rel = manifest_path.relative_to(models_dir / "manifests")
+    dest_manifest = manifests_output / manifest_rel
+    dest_manifest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(manifest_path, dest_manifest)
+    logger.info(f"Copied manifest: {manifest_rel}")
 
-    # Copy other blobs (not the one we split)
-    blobs_src = models_dir / "blobs"
-    blobs_output = models_output / "blobs"
-    blobs_output.mkdir(parents=True, exist_ok=True)
-
-    for blob_file in blobs_src.iterdir():
-        if blob_file.is_file() and blob_file.name != blob_path.name:
-            shutil.copy2(blob_file, blobs_output / blob_file.name)
+    # Copy other model-specific blobs (not the one we split)
+    for digest in model_digests:
+        src_blob = blobs_src / digest
+        if src_blob.exists() and src_blob.name != blob_path.name:
+            shutil.copy2(src_blob, blobs_output / digest)
 
     # Copy part 1 to blobs directory with .part1 extension
     part1_src = output_dir / "blobs" / split_metadata["part1"]["filename"]
