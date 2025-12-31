@@ -394,10 +394,14 @@ class TestGenerateZappaSettings:
 class TestPrepareDeploymentFiles:
     """Tests for prepare_deployment_files function."""
 
+    @patch("merle.model_split.get_ollama_models_dir")
     @patch("merle.functions.validate_ollama_model")
-    def test_prepare_deployment_files_basic(self, mock_validate: MagicMock, temp_cache_dir: Path):
+    def test_prepare_deployment_files_basic(
+        self, mock_validate: MagicMock, mock_models_dir_fn: MagicMock, temp_cache_dir: Path, mock_models_dir: Path
+    ):
         """Test preparing deployment files with basic parameters."""
         mock_validate.return_value = True
+        mock_models_dir_fn.return_value = mock_models_dir
 
         # Create template directory with mock templates
         template_dir = Path(__file__).parent.parent / "merle" / "templates"
@@ -426,12 +430,19 @@ class TestPrepareDeploymentFiles:
         assert config["models"]["llama2"]["dev"]["auth_token"] == "test-token"
         assert config["models"]["llama2"]["dev"]["region"] == "us-east-1"
 
+    @patch("merle.model_split.get_ollama_models_dir")
     @patch("merle.functions.validate_ollama_model")
     def test_prepare_deployment_files_with_tags(
-        self, mock_validate: MagicMock, temp_cache_dir: Path, sample_tags: dict
+        self,
+        mock_validate: MagicMock,
+        mock_models_dir_fn: MagicMock,
+        temp_cache_dir: Path,
+        sample_tags: dict,
+        mock_models_dir: Path,
     ):
         """Test preparing deployment files with tags."""
         mock_validate.return_value = True
+        mock_models_dir_fn.return_value = mock_models_dir
 
         model_cache_dir = prepare_deployment_files(
             model_name="llama2",
@@ -454,10 +465,14 @@ class TestPrepareDeploymentFiles:
         config = load_config(temp_cache_dir)
         assert config["models"]["llama2"]["dev"]["tags"] == sample_tags
 
+    @patch("merle.model_split.get_ollama_models_dir")
     @patch("merle.functions.validate_ollama_model")
-    def test_prepare_deployment_files_without_tags(self, mock_validate: MagicMock, temp_cache_dir: Path):
+    def test_prepare_deployment_files_without_tags(
+        self, mock_validate: MagicMock, mock_models_dir_fn: MagicMock, temp_cache_dir: Path, mock_models_dir: Path
+    ):
         """Test preparing deployment files without tags."""
         mock_validate.return_value = True
+        mock_models_dir_fn.return_value = mock_models_dir
 
         model_cache_dir = prepare_deployment_files(
             model_name="llama2",

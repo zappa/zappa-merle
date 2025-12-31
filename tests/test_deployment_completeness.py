@@ -10,14 +10,21 @@ from merle.cli import handle_prepare_dockerfile
 class TestDeploymentCompleteness:
     """Test that verifies what's missing for successful deployment."""
 
+    @patch("merle.model_split.get_ollama_models_dir")
     @patch("merle.functions.validate_ollama_model")
     @patch("merle.cli.get_default_project_name")
     def test_prepare_creates_expected_files(
-        self, mock_get_default_project: MagicMock, mock_validate: MagicMock, temp_cache_dir: Path
+        self,
+        mock_get_default_project: MagicMock,
+        mock_validate: MagicMock,
+        mock_models_dir_fn: MagicMock,
+        temp_cache_dir: Path,
+        mock_models_dir: Path,
     ) -> None:
         """Test that prepare command creates expected deployment files."""
         mock_validate.return_value = True
         mock_get_default_project.return_value = "testproject"
+        mock_models_dir_fn.return_value = mock_models_dir
 
         # Prepare deployment files
         args = argparse.Namespace(
@@ -53,14 +60,21 @@ class TestDeploymentCompleteness:
         config_path = temp_cache_dir / "testproject" / "config.json"
         assert config_path.exists(), "config.json should be created"
 
+    @patch("merle.model_split.get_ollama_models_dir")
     @patch("merle.functions.validate_ollama_model")
     @patch("merle.cli.get_default_project_name")
     def test_deployment_is_now_complete(  # noqa: PLR0915, PLR0912
-        self, mock_get_default_project: MagicMock, mock_validate: MagicMock, temp_cache_dir: Path
+        self,
+        mock_get_default_project: MagicMock,
+        mock_validate: MagicMock,
+        mock_models_dir_fn: MagicMock,
+        temp_cache_dir: Path,
+        mock_models_dir: Path,
     ) -> None:
         """Verify that deployment is now complete with all required components."""
         mock_validate.return_value = True
         mock_get_default_project.return_value = "testproject"
+        mock_models_dir_fn.return_value = mock_models_dir
 
         # Prepare deployment files
         args = argparse.Namespace(

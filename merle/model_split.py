@@ -14,6 +14,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import boto3
@@ -34,10 +35,61 @@ MAX_MODEL_SIZE_IN_IMAGE = DOCKER_IMAGE_MAX_SIZE_BYTES - BASE_IMAGE_OVERHEAD_BYTE
 SPLIT_METADATA_FILE = "split_metadata.json"
 
 
+def _get_platform_models_dirs() -> list[Path]:
+    """
+    Get platform-specific Ollama models directories to search.
+
+    Returns directories in priority order:
+    - macOS: ~/.ollama/models
+    - Linux: /usr/share/ollama/.ollama/models (systemd), ~/.ollama/models (user)
+    - Windows: ~/.ollama/models
+    """
+    if sys.platform == "darwin":
+        # macOS: ~/.ollama/models
+        return [Path.home() / ".ollama" / "models"]
+
+    if sys.platform == "win32":
+        # Windows: C:\Users\%username%\.ollama\models
+        return [Path.home() / ".ollama" / "models"]
+
+    # Linux: check systemd install first, then user install
+    return [
+        Path("/usr/share/ollama/.ollama/models"),  # systemd install
+        Path.home() / ".ollama" / "models",  # user install
+    ]
+
+
 def get_ollama_models_dir() -> Path:
-    """Get the default Ollama models directory."""
-    home = Path.home()
-    return home / ".ollama" / "models"
+    """
+    Get the Ollama models directory.
+
+    Checks in order:
+    1. OLLAMA_MODELS environment variable (if set)
+    2. Platform-specific directories (first existing one):
+       - macOS: ~/.ollama/models
+       - Linux: /usr/share/ollama/.ollama/models (systemd) or ~/.ollama/models (user)
+       - Windows: ~/.ollama/models
+
+    Returns:
+        Path to the Ollama models directory
+    """
+    # Check environment variable first
+    env_models_dir = os.environ.get("OLLAMA_MODELS")
+    if env_models_dir:
+        models_path = Path(env_models_dir)
+        logger.debug(f"Using OLLAMA_MODELS from environment: {models_path}")
+        return models_path
+
+    # Search platform-specific directories
+    for models_dir in _get_platform_models_dirs():
+        if models_dir.exists():
+            logger.debug(f"Found models directory: {models_dir}")
+            return models_dir
+
+    # Fall back to first platform default (even if it doesn't exist yet)
+    default_dir = _get_platform_models_dirs()[0]
+    logger.debug(f"Using default models directory: {default_dir}")
+    return default_dir
 
 
 def calculate_directory_size(path: Path) -> int:

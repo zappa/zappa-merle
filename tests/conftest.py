@@ -22,6 +22,25 @@ def temp_cache_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def mock_models_dir(tmp_path: Path) -> Path:
+    """
+    Create a mock Ollama models directory for testing.
+
+    Creates an empty models directory structure to avoid tests
+    using the real system Ollama models.
+
+    Args:
+        tmp_path: pytest tmp_path fixture
+
+    Returns:
+        Path to mock models directory
+    """
+    models_dir = tmp_path / ".ollama" / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    return models_dir
+
+
+@pytest.fixture
 def sample_config() -> dict:
     """
     Return a sample configuration dictionary.
