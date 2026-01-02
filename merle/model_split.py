@@ -216,23 +216,39 @@ def _get_model_manifest_path(model_name: str, models_dir: Path) -> Path | None:
     """
     Get the manifest file path for a model.
 
+    Handles different model name formats:
+    - Simple: "llama2" → manifests/registry.ollama.ai/library/llama2/latest
+    - With tag: "llama2:7b" → manifests/registry.ollama.ai/library/llama2/7b
+    - User model: "user/model" → manifests/registry.ollama.ai/user/model/latest
+    - HuggingFace: "hf.co/org/model" → manifests/hf.co/org/model/latest
+
     Args:
-        model_name: Ollama model name (e.g., "llama2", "llama2:7b", "user/model")
+        model_name: Ollama model name
         models_dir: Path to Ollama models directory
 
     Returns:
         Path to manifest file or None if not found
     """
     # Parse model name into components
-    # Format: [namespace/]model[:tag]
-    # Default namespace is "library", default tag is "latest"
+    # Format: [registry/][namespace/]model[:tag]
     parts = model_name.split(":")
     name_part = parts[0]
     tag = parts[1] if len(parts) > 1 else "latest"
 
+    # Check if it's a HuggingFace model (hf.co/...)
+    if name_part.startswith("hf.co/"):
+        # HuggingFace models: hf.co/org/model → manifests/hf.co/org/model/tag
+        manifest_path = models_dir / "manifests" / name_part / tag
+        if manifest_path.exists():
+            return manifest_path
+        return None
+
+    # Standard Ollama models use registry.ollama.ai
     if "/" in name_part:
+        # User model: user/model → registry.ollama.ai/user/model/tag
         namespace, model = name_part.split("/", 1)
     else:
+        # Library model: model → registry.ollama.ai/library/model/tag
         namespace = "library"
         model = name_part
 
