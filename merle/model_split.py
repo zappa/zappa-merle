@@ -26,10 +26,12 @@ logger = logging.getLogger(__name__)
 HTTP_OK = 200
 
 # Docker image size limits
-# Lambda container image max is 10GB, leave room for base image + dependencies
-DOCKER_IMAGE_MAX_SIZE_BYTES = 10 * 1024 * 1024 * 1024  # 10GB
-BASE_IMAGE_OVERHEAD_BYTES = 2 * 1024 * 1024 * 1024  # ~2GB for base image + deps
-MAX_MODEL_SIZE_IN_IMAGE = DOCKER_IMAGE_MAX_SIZE_BYTES - BASE_IMAGE_OVERHEAD_BYTES  # ~8GB
+# Lambda container image max is 10GB uncompressed
+# Base image (Python runtime, Ollama, dependencies) is ~5GB
+# This leaves ~5GB for the model in the Docker image
+DOCKER_IMAGE_MAX_SIZE_BYTES = 10 * 1024 * 1024 * 1024  # 10GB Lambda limit
+BASE_IMAGE_OVERHEAD_BYTES = 5 * 1024 * 1024 * 1024  # ~5GB for base image + deps
+MAX_MODEL_SIZE_IN_IMAGE = DOCKER_IMAGE_MAX_SIZE_BYTES - BASE_IMAGE_OVERHEAD_BYTES  # ~5GB for model
 
 # Split metadata filename
 SPLIT_METADATA_FILE = "split_metadata.json"
