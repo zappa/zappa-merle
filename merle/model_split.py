@@ -608,6 +608,87 @@ def reassemble_blob(
     return True
 
 
+def reassemble_blob_streaming(
+    part1_path: Path,
+    s3_bucket: str,
+    s3_key: str,
+    output_path: Path,
+    region: str,
+    expected_sha256: str | None = None,
+) -> bool:
+    """
+    Reassemble a split blob by streaming part2 directly from S3.
+
+    This avoids downloading part2 to disk first, which is critical for
+    staying within Lambda's 10GB ephemeral storage limit when the model
+    is large (e.g., 9GB blob + 3GB S3 portion would exceed 10GB).
+
+    Args:
+        part1_path: Path to part 1 file (in Docker image)
+        s3_bucket: S3 bucket containing part 2
+        s3_key: S3 key for part 2
+        output_path: Path for reassembled file (in ephemeral storage)
+        region: AWS region
+        expected_sha256: Optional SHA256 hash to verify
+
+    Returns:
+        True if successful, False otherwise
+    """
+    logger.info(f"Reassembling blob: {part1_path} + s3://{s3_bucket}/{s3_key} → {output_path}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    hasher = hashlib.sha256() if expected_sha256 else None
+
+    chunk_size = 64 * 1024 * 1024  # 64MB chunks
+    bytes_written = 0
+
+    with output_path.open("wb") as out:
+        # Write part 1 from local file (in Docker image, read-only)
+        logger.info(f"Writing part 1 from {part1_path}")
+        with part1_path.open("rb") as part1:
+            while True:
+                chunk = part1.read(chunk_size)
+                if not chunk:
+                    break
+                out.write(chunk)
+                bytes_written += len(chunk)
+                if hasher:
+                    hasher.update(chunk)
+        logger.info(f"Part 1 complete: {bytes_written} bytes written")
+
+        # Stream part 2 directly from S3 (never hits disk)
+        logger.info(f"Streaming part 2 from s3://{s3_bucket}/{s3_key}")
+        s3 = boto3.client("s3", region_name=region)
+
+        response = s3.get_object(Bucket=s3_bucket, Key=s3_key)
+        body = response["Body"]
+
+        part2_bytes = 0
+        while True:
+            chunk = body.read(chunk_size)
+            if not chunk:
+                break
+            out.write(chunk)
+            bytes_written += len(chunk)
+            part2_bytes += len(chunk)
+            if hasher:
+                hasher.update(chunk)
+
+        body.close()
+        logger.info(f"Part 2 complete: {part2_bytes} bytes streamed from S3")
+
+    if expected_sha256 and hasher:
+        actual_sha256 = hasher.hexdigest()
+        if actual_sha256 != expected_sha256:
+            logger.error(f"SHA256 mismatch! Expected {expected_sha256}, got {actual_sha256}")
+            output_path.unlink()
+            return False
+        logger.info("SHA256 verification passed")
+
+    logger.info(f"Reassembly complete: {output_path} ({bytes_written} bytes)")
+    return True
+
+
 def copy_model_to_output(model_name: str, output_dir: Path) -> dict:
     """
     Copy model files to output directory for Docker image inclusion.
@@ -822,6 +903,7 @@ def reassemble_at_runtime(
     Reassemble a split model at Lambda runtime.
 
     This function should be called during Lambda cold start if split_metadata.json exists.
+    Uses streaming from S3 to avoid exceeding Lambda's 10GB ephemeral storage limit.
 
     Args:
         source_models_dir: Path to models in Docker image (/var/task/models)
@@ -872,23 +954,25 @@ def reassemble_at_runtime(
             if not dest.exists():
                 shutil.copy2(blob_file, dest)
 
-    # Download part 2 from S3
+    # Get S3 info and region
     s3_info = metadata["s3"]
     effective_region = region or s3_info.get("region") or os.environ.get("AWS_REGION") or "us-east-1"
 
-    part2_temp = target_models_dir / "temp_part2"
-    download_from_s3(s3_info["bucket"], s3_info["key"], part2_temp, effective_region)
-
-    # Reassemble the blob
+    # Reassemble the blob by streaming part2 directly from S3
+    # This avoids downloading part2 to disk first, which would exceed
+    # Lambda's 10GB ephemeral storage limit for large models
     part1_path = blobs_src / part1_filename
     output_path = blobs_dst / split_blob_name
     expected_sha256 = metadata["blob_split"]["original_blob_sha256"]
 
-    success = reassemble_blob(part1_path, part2_temp, output_path, expected_sha256)
-
-    # Clean up temp file
-    if part2_temp.exists():
-        part2_temp.unlink()
+    success = reassemble_blob_streaming(
+        part1_path=part1_path,
+        s3_bucket=s3_info["bucket"],
+        s3_key=s3_info["key"],
+        output_path=output_path,
+        region=effective_region,
+        expected_sha256=expected_sha256,
+    )
 
     if success:
         logger.info("Model reassembly complete")
