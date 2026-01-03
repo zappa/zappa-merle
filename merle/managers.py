@@ -5,6 +5,7 @@ preparation, Docker image building, ECR operations, and Zappa deployment.
 """
 
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -296,6 +297,81 @@ class DeploymentManager:
         logger.info(f"Setting ephemeral storage to {ephemeral_storage} MB for {model_size_gb:.2f} GB model")
         return ephemeral_storage
 
+    def _get_authorizer_lambda_name(self) -> str:
+        """Get the name for the authorizer Lambda function."""
+        sanitized_project = sanitize_for_cloudformation(self.project_name)
+        return f"{sanitized_project}-{self.stage}-authorizer"
+
+    def _deploy_authorizer_lambda(self, image_uri: str, auth_token: str, role_arn: str) -> str:
+        """
+        Deploy the authorizer Lambda function using the Docker image.
+
+        Args:
+            image_uri: ECR image URI for the Docker image
+            auth_token: API key for authentication
+            role_arn: IAM role ARN for the Lambda function
+
+        Returns:
+            ARN of the deployed authorizer Lambda function
+        """
+        lambda_client = boto3.client("lambda", region_name=self.region)
+        function_name = self._get_authorizer_lambda_name()
+
+        logger.info(f"Deploying authorizer Lambda: {function_name}")
+
+        # Check if function already exists
+        try:
+            existing = lambda_client.get_function(FunctionName=function_name)
+            # Update existing function
+            logger.info(f"Updating existing authorizer Lambda: {function_name}")
+
+            # Update function code
+            lambda_client.update_function_code(
+                FunctionName=function_name,
+                ImageUri=image_uri,
+            )
+
+            # Wait for update to complete
+            waiter = lambda_client.get_waiter("function_updated_v2")
+            waiter.wait(FunctionName=function_name)
+
+            # Update function configuration
+            lambda_client.update_function_configuration(
+                FunctionName=function_name,
+                Role=role_arn,
+                Timeout=10,
+                MemorySize=128,
+                Environment={"Variables": {"API_KEY": auth_token}},
+                ImageConfig={"Command": ["authorizer.lambda_handler"]},
+            )
+
+            # Wait for config update
+            waiter.wait(FunctionName=function_name)
+
+            return existing["Configuration"]["FunctionArn"]
+
+        except lambda_client.exceptions.ResourceNotFoundException:
+            # Create new function
+            logger.info(f"Creating new authorizer Lambda: {function_name}")
+
+            response = lambda_client.create_function(
+                FunctionName=function_name,
+                Role=role_arn,
+                Code={"ImageUri": image_uri},
+                PackageType="Image",
+                Timeout=10,
+                MemorySize=128,
+                Environment={"Variables": {"API_KEY": auth_token}},
+                ImageConfig={"Command": ["authorizer.lambda_handler"]},
+            )
+
+            # Wait for function to be active
+            waiter = lambda_client.get_waiter("function_active_v2")
+            waiter.wait(FunctionName=function_name)
+
+            logger.info(f"Authorizer Lambda deployed: {response['FunctionArn']}")
+            return response["FunctionArn"]
+
     def _generate_zappa_settings(
         self,
         auth_token: str,
@@ -305,6 +381,7 @@ class DeploymentManager:
         context_window_size: int | None = None,
         use_split: bool = False,
         ephemeral_storage: int = 5120,
+        authorizer_arn: str | None = None,
     ) -> None:
         """Generate zappa_settings.json using Zappa's Python API."""
         mode_str = " (split mode)" if use_split else ""
@@ -316,12 +393,20 @@ class DeploymentManager:
         sanitized_project = sanitize_for_cloudformation(self.project_name)
         stage_config = settings_dict[self.stage]
 
-        # Configure embedded authorizer
-        authorizer_config = {
-            "function": "authorizer.lambda_handler",
-            "token_header": "X-API-Key",
-            "result_ttl": 300,
-        }
+        # Configure authorizer - use ARN if provided (for Docker deployments)
+        if authorizer_arn:
+            authorizer_config = {
+                "arn": authorizer_arn,
+                "token_header": "X-API-Key",
+                "result_ttl": 300,
+            }
+        else:
+            # Fallback to function reference (for zip deployments)
+            authorizer_config = {
+                "function": "authorizer.lambda_handler",
+                "token_header": "X-API-Key",
+                "result_ttl": 300,
+            }
 
         # Build environment variables
         models_path = "/tmp/models"  # noqa: S108
@@ -482,9 +567,81 @@ class DeploymentManager:
 
         logger.info(f"Updated zappa_settings.json with docker_image_uri: {image_uri}")
 
+    def _get_or_create_authorizer_role(self) -> str:
+        """
+        Get or create an IAM role for the authorizer Lambda function.
+
+        Returns:
+            ARN of the IAM role
+        """
+        iam_client = boto3.client("iam", region_name=self.region)
+        sanitized_project = sanitize_for_cloudformation(self.project_name)
+        role_name = f"{sanitized_project}-{self.stage}-authorizer-role"
+
+        # Trust policy for Lambda
+        assume_role_policy = json.dumps(
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"Service": "lambda.amazonaws.com"},
+                        "Action": "sts:AssumeRole",
+                    }
+                ],
+            }
+        )
+
+        try:
+            response = iam_client.get_role(RoleName=role_name)
+            logger.info(f"Using existing authorizer IAM role: {role_name}")
+            return response["Role"]["Arn"]
+        except iam_client.exceptions.NoSuchEntityException:
+            logger.info(f"Creating authorizer IAM role: {role_name}")
+
+            # Create the role
+            response = iam_client.create_role(
+                RoleName=role_name,
+                AssumeRolePolicyDocument=assume_role_policy,
+                Description="IAM role for Merle API Gateway authorizer Lambda",
+            )
+            role_arn = response["Role"]["Arn"]
+
+            # Attach basic execution policy
+            iam_client.attach_role_policy(
+                RoleName=role_name,
+                PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+            )
+
+            # Wait for role to propagate
+            logger.info("Waiting for IAM role to propagate...")
+            time.sleep(10)
+
+            return role_arn
+
+    def _update_zappa_settings_with_authorizer(self, authorizer_arn: str) -> None:
+        """Update zappa_settings.json with authorizer ARN."""
+        with self.zappa_settings_path.open() as f:
+            settings_data = json.load(f)
+
+        # Update authorizer config to use ARN
+        settings_data[self.stage]["authorizer"] = {
+            "arn": authorizer_arn,
+            "token_header": "X-API-Key",
+            "result_ttl": 300,
+        }
+
+        with self.zappa_settings_path.open("w") as f:
+            json.dump(settings_data, f, indent=4, sort_keys=True)
+
+        logger.info(f"Updated zappa_settings.json with authorizer ARN: {authorizer_arn}")
+
     def deploy(self, auth_token: str, max_retries: int = 3, retry_delay: int = 15) -> str | None:
         """
         Deploy to AWS Lambda using Zappa.
+
+        For Docker image deployments, this also deploys a separate authorizer Lambda
+        since Zappa doesn't automatically deploy the authorizer when using --docker-image-uri.
 
         Args:
             auth_token: Authentication token for API access
@@ -511,6 +668,16 @@ class DeploymentManager:
 
         if not image_uri:
             raise RuntimeError("Docker image URI not found. Run build_and_push_docker_image() first.")
+
+        # Deploy authorizer Lambda separately (required for Docker image deployments)
+        # Zappa doesn't automatically deploy the authorizer when using --docker-image-uri
+        logger.info("Deploying authorizer Lambda function...")
+        authorizer_role_arn = self._get_or_create_authorizer_role()
+        authorizer_arn = self._deploy_authorizer_lambda(image_uri, auth_token, authorizer_role_arn)
+        logger.info(f"Authorizer Lambda deployed: {authorizer_arn}")
+
+        # Update zappa settings with authorizer ARN
+        self._update_zappa_settings_with_authorizer(authorizer_arn)
 
         # Set environment for deployment
         env = os.environ.copy()
@@ -639,10 +806,52 @@ class DeploymentManager:
         if not zappa_succeeded:
             logger.warning(f"Zappa undeploy returned exit code {result.returncode}")
 
+        # Clean up authorizer Lambda and IAM role
+        self._delete_authorizer_lambda()
+        self._delete_authorizer_role()
+
         # Clean up local files
         self._cleanup_local_files()
 
         return zappa_succeeded
+
+    def _delete_authorizer_lambda(self) -> None:
+        """Delete the authorizer Lambda function if it exists."""
+        lambda_client = boto3.client("lambda", region_name=self.region)
+        function_name = self._get_authorizer_lambda_name()
+
+        try:
+            logger.info(f"Deleting authorizer Lambda: {function_name}")
+            lambda_client.delete_function(FunctionName=function_name)
+            logger.info(f"Deleted authorizer Lambda: {function_name}")
+        except lambda_client.exceptions.ResourceNotFoundException:
+            logger.debug(f"Authorizer Lambda not found: {function_name}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Failed to delete authorizer Lambda: {e}")
+
+    def _delete_authorizer_role(self) -> None:
+        """Delete the authorizer IAM role if it exists."""
+        iam_client = boto3.client("iam", region_name=self.region)
+        sanitized_project = sanitize_for_cloudformation(self.project_name)
+        role_name = f"{sanitized_project}-{self.stage}-authorizer-role"
+
+        try:
+            logger.info(f"Deleting authorizer IAM role: {role_name}")
+
+            # Detach managed policies first (ignore if already detached)
+            with contextlib.suppress(iam_client.exceptions.NoSuchEntityException):
+                iam_client.detach_role_policy(
+                    RoleName=role_name,
+                    PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+                )
+
+            # Delete the role
+            iam_client.delete_role(RoleName=role_name)
+            logger.info(f"Deleted authorizer IAM role: {role_name}")
+        except iam_client.exceptions.NoSuchEntityException:
+            logger.debug(f"Authorizer IAM role not found: {role_name}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Failed to delete authorizer IAM role: {e}")
 
     def _cleanup_local_files(self) -> None:
         """Clean up local deployment files and configuration."""
