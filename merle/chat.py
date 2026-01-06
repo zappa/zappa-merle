@@ -410,6 +410,75 @@ class ChatClient:
         }
 
 
+def run_health_check(
+    base_url: str,
+    auth_token: str,
+    model: str,
+    debug: bool = False,
+    system_prompt: str | None = None,
+    context_window_size: int | None = None,
+) -> tuple[bool, str]:
+    """
+    Run a health check by sending 'hello' and waiting for a response.
+
+    Args:
+        base_url: Base URL of the deployed API
+        auth_token: Authentication token
+        model: Model name to use
+        debug: Show debug and info log messages if True
+        system_prompt: Optional system prompt for conversation context
+        context_window_size: Optional context window size (defaults to 2048 if not provided)
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    # Configure logging level based on debug flag
+    if not debug:
+        logging.getLogger("merle").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+    else:
+        logging.getLogger("merle").setLevel(logging.INFO)
+        logging.getLogger("httpx").setLevel(logging.INFO)
+
+    if context_window_size is None:
+        context_window_size = 2048
+
+    client = ChatClient(
+        base_url, auth_token, model, system_prompt=system_prompt, context_window_size=context_window_size
+    )
+
+    print(f"Testing connection to {model} at {base_url}...")
+    print("Sending: hello")
+    print("-" * 40)
+
+    try:
+        response = client.chat("hello", prompt="Response: ")
+        print()  # Newline after response
+        print("-" * 40)
+
+        if response:
+            print("Status: OK")
+            return True, response
+    except httpx.HTTPStatusError as e:
+        print(f"\nStatus: FAILED (HTTP {e.response.status_code})")
+        return False, f"HTTP error {e.response.status_code}"
+    except httpx.ConnectError as e:
+        print("\nStatus: FAILED (connection error)")
+        logger.debug(f"Connection error details: {e}")
+        return False, f"Connection error: {e}"
+    except httpx.TimeoutException as e:
+        print("\nStatus: FAILED (timeout)")
+        logger.debug(f"Timeout details: {e}")
+        return False, f"Timeout: {e}"
+    except Exception as e:
+        print(f"\nStatus: FAILED ({type(e).__name__})")
+        logger.exception(f"Health check error: {e}")
+        return False, str(e)
+    else:
+        print("Status: FAILED (empty response)")
+        return False, "Empty response received"
+
+
 def run_interactive_chat(  # noqa: PLR0915, PLR0912, C901
     base_url: str,
     auth_token: str,

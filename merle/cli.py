@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 
 from merle import __version__
-from merle.chat import run_interactive_chat
+from merle.chat import run_health_check, run_interactive_chat
 from merle.functions import (
     get_default_project_name,
     get_project_cache_dir,
@@ -759,6 +759,18 @@ def handle_chat(args: argparse.Namespace) -> int:
         if context_window_size:
             logger.info(f"Context window size: {context_window_size} tokens")
 
+        # Check if test mode is requested
+        if getattr(args, "test", False):
+            success, _ = run_health_check(
+                base_url=deployment_url,
+                auth_token=auth_token,
+                model=model_name,
+                debug=args.debug,
+                system_prompt=system_prompt,
+                context_window_size=context_window_size,
+            )
+            return 0 if success else 1
+
         # Start interactive chat
         run_interactive_chat(
             base_url=deployment_url,
@@ -984,6 +996,11 @@ def main() -> int:
         "--debug",
         action="store_true",
         help="Show debug and info log messages during chat",
+    )
+    chat_parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Send a test 'hello' message and exit (health check mode)",
     )
     chat_parser.add_argument(
         "--project",
