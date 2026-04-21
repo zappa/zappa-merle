@@ -7,9 +7,18 @@ from unittest.mock import MagicMock, patch
 from merle.cli import handle_prepare_dockerfile
 
 
+def _fake_copy_model_to_output(_model_name: str, output_dir: Path) -> None:
+    """Mock for copy_model_to_output that creates an empty models/ dir in output."""
+    (output_dir / "models").mkdir(parents=True, exist_ok=True)
+
+
 class TestDeploymentCompleteness:
     """Test that verifies what's missing for successful deployment."""
 
+    @patch("merle.model_split.copy_model_to_output", side_effect=_fake_copy_model_to_output)
+    @patch("merle.model_split.needs_splitting", return_value=False)
+    @patch("merle.model_split.calculate_model_size", return_value=(1024, {"total_size_gb": 0.001}))
+    @patch("merle.model_split.download_model_locally")
     @patch("merle.model_split.get_ollama_models_dir")
     @patch("merle.functions.validate_ollama_model")
     @patch("merle.cli.get_default_project_name")
@@ -18,6 +27,10 @@ class TestDeploymentCompleteness:
         mock_get_default_project: MagicMock,
         mock_validate: MagicMock,
         mock_models_dir_fn: MagicMock,
+        mock_download: MagicMock,
+        mock_calc_size: MagicMock,
+        mock_needs_split: MagicMock,
+        mock_copy_model: MagicMock,
         temp_cache_dir: Path,
         mock_models_dir: Path,
     ) -> None:
@@ -60,6 +73,10 @@ class TestDeploymentCompleteness:
         config_path = temp_cache_dir / "testproject" / "config.json"
         assert config_path.exists(), "config.json should be created"
 
+    @patch("merle.model_split.copy_model_to_output", side_effect=_fake_copy_model_to_output)
+    @patch("merle.model_split.needs_splitting", return_value=False)
+    @patch("merle.model_split.calculate_model_size", return_value=(1024, {"total_size_gb": 0.001}))
+    @patch("merle.model_split.download_model_locally")
     @patch("merle.model_split.get_ollama_models_dir")
     @patch("merle.functions.validate_ollama_model")
     @patch("merle.cli.get_default_project_name")
@@ -68,6 +85,10 @@ class TestDeploymentCompleteness:
         mock_get_default_project: MagicMock,
         mock_validate: MagicMock,
         mock_models_dir_fn: MagicMock,
+        mock_download: MagicMock,
+        mock_calc_size: MagicMock,
+        mock_needs_split: MagicMock,
+        mock_copy_model: MagicMock,
         temp_cache_dir: Path,
         mock_models_dir: Path,
     ) -> None:

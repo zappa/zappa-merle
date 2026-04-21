@@ -438,6 +438,7 @@ class TestPrepareDeploymentFiles:
             auth_token="test-token",
             aws_region="us-east-1",
             s3_bucket="test-bucket",
+            skip_model_download=True,
         )
 
         # Verify model cache directory was created
@@ -476,6 +477,7 @@ class TestPrepareDeploymentFiles:
             auth_token="test-token",
             tags=sample_tags,
             s3_bucket="test-bucket-tags",
+            skip_model_download=True,
         )
 
         # Verify zappa_settings.json contains tags
@@ -505,6 +507,7 @@ class TestPrepareDeploymentFiles:
             project_name="testproject",
             auth_token="test-token-no-tags",
             s3_bucket="test-bucket-no-tags",
+            skip_model_download=True,
         )
 
         # Verify zappa_settings.json has empty tags
