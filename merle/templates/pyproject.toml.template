@@ -1,0 +1,13 @@
+# Minimal pyproject.toml used only by the deployment Docker image build.
+# The consumer's own pyproject.toml is intentionally NOT copied into the image:
+# doing so pulled in the consumer's full dep tree (often GPU/ML stacks that the
+# Lambda never needs) and, if the consumer declared a readme/build backend,
+# crashed `uv sync` inside the container. This manifest only needs to install
+# merle itself and its transitive runtime deps (flask, zappa, httpx).
+[project]
+name = "{{PROJECT_NAME}}-runtime"
+version = "0.0.0"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "merle @ git+https://github.com/zappa/zappa-merle.git",
+]

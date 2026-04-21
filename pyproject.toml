@@ -1,6 +1,6 @@
 [project]
 name = "merle"
-version = "0.0.1"
+version = "0.0.3"
 description = "This project uses zappa/ollama to deploy ollama compatable models to AWS lambda"
 authors = [{ name = "monkut", email = "hakkoakkei@gmail.com" }]
 readme = "README.md"
@@ -21,7 +21,7 @@ license-files = ["LICENSE"]
 dependencies = [
     "flask>=3.1.0,<3.2.0",
     "httpx>=0.28.1",
-    "zappa==0.61.2",
+    "zappa>=0.61.2,<0.63",
 ]
 
 [project.urls]
@@ -35,20 +35,16 @@ dev = [
     "pyright>=1.1.396",
     "ruff>=0.9.10",
     "pytest>=8.3.5",
+    "pytest-cov>=6.0",
     "poethepoet>=0.34.0",
 ]
 
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.setuptools.packages.find]
-where = ["."]  # list of folders that contain the packages (["."] by default)
-include = ["merle", "merle.templates"]  # package names should match these glob patterns (["*"] by default)
-exclude = []  # exclude packages matching these glob patterns (empty by default)
-
-[tool.setuptools.package-data]
-merle = ["templates/*.template", "templates/*.py"]
+[tool.hatch.build.targets.wheel]
+packages = ["merle"]
 
 # Task runner
 [tool.poe.tasks]
@@ -62,7 +58,7 @@ put-project-data = "aws s3 cp ./data s3://zappa-merle/ --recursive"
 
 [tool.poe.tasks.test]
 # run the test command in a shell
-shell = "mkdir test-reports || true && uv run pytest -v tests/ --junitxml=test-reports/junit.xml"
+shell = "mkdir test-reports || true && uv run pytest -v tests/ --cov=merle --cov-report=term-missing --junitxml=test-reports/junit.xml"
 
 
 [tool.pyright]
@@ -81,7 +77,7 @@ markers = [
 [tool.ruff]
 line-length = 120
 indent-width = 4
-target-version ='py313'
+target-version = 'py314'
 exclude = [".git", ".venv", "**/node_modules/", "**/.volta", "jupyter/*"]
 fix = true
 respect-gitignore = true
@@ -168,7 +164,7 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 "**/cli.py" = ["T201", "TRY300", "TRY400", "TRY401", "PLC0415", "S603", "PLR0911", "PLR0915"]
 "**/chat.py" = ["T201", "TRY400", "TRY401"]
 "**/functions.py" = ["PLR2004", "TRY300", "TRY301", "TRY400", "TRY401", "B904"]
-"tests/**" = ["S105", "S106", "PLR2004", "FLY002", "ANN202", "ARG001", "F841", "TC003"]
+"tests/**" = ["S105", "S106", "PLR2004", "FLY002", "ANN001", "ANN202", "ARG001", "F841", "TC003"]
 
 [tool.ruff.lint.mccabe]
 # Flag errors (`C901`) whenever the complexity level exceeds this value.

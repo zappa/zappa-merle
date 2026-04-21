@@ -27,13 +27,31 @@ def lambda_handler(event: dict[str, Any], _context: dict[str, Any]) -> dict[str,
 
     logger.info(f"Authorizer invoked for method: {method_arn}")
 
+    # API Gateway caches authorizer responses by token (result_ttl), not by method/path,
+    # so the policy must cover the whole API — otherwise the first request seeds the cache
+    # with a policy scoped to that single method and subsequent paths get 403.
+    api_resource = _api_wide_resource(method_arn)
+
     # Validate token
     if token == API_KEY:
         logger.info("Token validation successful")
-        return generate_policy("user", "Allow", method_arn)
+        return generate_policy("user", "Allow", api_resource)
 
     logger.warning("Token validation failed")
-    return generate_policy("user", "Deny", method_arn)
+    return generate_policy("user", "Deny", api_resource)
+
+
+def _api_wide_resource(method_arn: str) -> str:
+    """
+    Expand a method ARN to an API-wide wildcard ARN.
+
+    Input:  arn:aws:execute-api:region:account:api-id/stage/METHOD/path
+    Output: arn:aws:execute-api:region:account:api-id/*/*/*
+    """
+    if not method_arn or "/" not in method_arn:
+        return method_arn
+    api_arn = method_arn.split("/", 1)[0]
+    return f"{api_arn}/*/*/*"
 
 
 def generate_policy(principal_id: str, effect: str, resource: str) -> dict[str, Any]:

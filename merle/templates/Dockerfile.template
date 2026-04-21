@@ -21,15 +21,16 @@ ENV UV_PROJECT_ENVIRONMENT=/var/lang/ \
 
 # AWS Lambda uses dnf/microdnf instead of apt-get
 # Install system dependencies (curl already installed, skip to avoid conflicts)
-RUN dnf install -y tar gzip ca-certificates procps git findutils || microdnf install -y tar gzip ca-certificates procps git findutils && \
+# zstd is required to extract the Ollama release tarball (tar.zst format since ~v0.20+)
+RUN dnf install -y tar gzip zstd ca-certificates procps git findutils || microdnf install -y tar gzip zstd ca-certificates procps git findutils && \
     dnf clean all || microdnf clean all
 
 # Download and install Ollama binary to /var/task/bin (required for Zappa ZIP deployment)
 # Zappa only packages files from /var/task/ when deploying as ZIP, so we must install here
-RUN curl -fsSL https://ollama.com/download/ollama-linux-amd64.tgz -o /tmp/ollama.tgz && \
+RUN curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst -o /tmp/ollama.tar.zst && \
     mkdir -p /var/task/bin && \
-    tar -xzf /tmp/ollama.tgz -C /var/task && \
-    rm /tmp/ollama.tgz && \
+    tar --zstd -xf /tmp/ollama.tar.zst -C /var/task && \
+    rm /tmp/ollama.tar.zst && \
     chmod +x /var/task/bin/ollama && \
     ls -la /var/task/bin/ollama && \
     /var/task/bin/ollama --version
@@ -45,8 +46,9 @@ WORKDIR ${FUNCTION_DIR}
 
 # Install Python dependencies using uv
 # Note: --frozen is not used because we don't copy uv.lock (architecture differences)
+# --no-install-project skips building the stub manifest; only its dependencies matter here
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --no-dev --inexact
+    uv sync --no-dev --inexact --no-install-project
 
 # Copy authorizer and Zappa settings JSON
 COPY authorizer.py ${FUNCTION_DIR}/

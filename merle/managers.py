@@ -11,6 +11,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,24 @@ from merle.functions import (
 from merle.settings import REGION
 
 logger = logging.getLogger(__name__)
+
+
+def _subprocess_env_with_venv_bin(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """
+    Build a subprocess environment where sys.executable's bin dir is on PATH.
+
+    When merle is invoked via a fully-qualified venv path (e.g.
+    `/tmp/venv/bin/merle`), the child process inherits the parent's PATH, which
+    may not include the venv's bin/. `zappa` then fails to resolve. Prepending
+    Path(sys.executable).parent ensures the same interpreter's sibling scripts
+    (zappa) are found.
+    """
+    env = os.environ.copy()
+    if extra:
+        env.update(extra)
+    venv_bin = str(Path(sys.executable).parent)
+    env["PATH"] = f"{venv_bin}{os.pathsep}{env.get('PATH', '')}"
+    return env
 
 
 class DeploymentManager:
@@ -136,9 +155,6 @@ class DeploymentManager:
         # Get template directory from installed package
         template_dir = Path(__file__).parent / "templates"
 
-        # Get consuming project root from current working directory
-        consuming_project_root = Path.cwd()
-
         # Prepare replacements
         tags_dict = tags or {}
 
@@ -199,13 +215,14 @@ class DeploymentManager:
             ephemeral_storage=ephemeral_storage,
         )
 
-        # Copy pyproject.toml from consuming project
-        pyproject_src = consuming_project_root / "pyproject.toml"
-        if pyproject_src.exists():
-            shutil.copy2(pyproject_src, self.model_cache_dir / "pyproject.toml")
-            logger.info(f"Copied pyproject.toml from consuming project: {consuming_project_root}")
-        else:
-            logger.warning(f"pyproject.toml not found in consuming project: {consuming_project_root}")
+        # Generate a minimal pyproject.toml for the deployment image.
+        # Copying the consumer's pyproject.toml pulled in unrelated deps and failed
+        # when the consumer declared a readme/build backend the image didn't ship.
+        generate_from_template(
+            template_path=template_dir / "pyproject.toml.template",
+            output_path=self.model_cache_dir / "pyproject.toml",
+            replacements={"PROJECT_NAME": sanitize_for_cloudformation(self.project_name)},
+        )
 
         # Update configuration
         update_model_config(
@@ -679,9 +696,9 @@ class DeploymentManager:
         # Update zappa settings with authorizer ARN
         self._update_zappa_settings_with_authorizer(authorizer_arn)
 
-        # Set environment for deployment
-        env = os.environ.copy()
-        env["API_KEY"] = auth_token
+        # Set environment for deployment; ensure zappa (installed alongside merle)
+        # is resolvable even when merle was launched via its fully-qualified venv path.
+        env = _subprocess_env_with_venv_bin({"API_KEY": auth_token})
 
         # Run zappa deploy with retry logic
         cmd = ["zappa", "deploy", self.stage, "--docker-image-uri", image_uri]
@@ -791,13 +808,14 @@ class DeploymentManager:
 
         logger.info(f"Destroying deployment for model: {self.model_name}, stage: {self.stage}")
 
-        # Run zappa undeploy
+        # Run zappa undeploy (same PATH fix as deploy so zappa resolves from the venv)
         cmd = ["zappa", "undeploy", self.stage, "--yes"]
 
         logger.info(f"Running: {' '.join(cmd)}")
         result = subprocess.run(  # noqa: S603
             cmd,
             cwd=self.model_cache_dir,
+            env=_subprocess_env_with_venv_bin(),
             check=False,
             capture_output=False,
         )
