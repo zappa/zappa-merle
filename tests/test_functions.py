@@ -310,6 +310,31 @@ class TestGenerateFromTemplate:
         assert output_path.read_text() == "Content: test"
 
 
+class TestDockerfileTemplate:
+    """Regression tests for the Dockerfile template (Issue #2)."""
+
+    @pytest.fixture
+    def dockerfile_template(self) -> str:
+        template_path = Path(__file__).parent.parent / "merle" / "templates" / "Dockerfile.template"
+        return template_path.read_text()
+
+    def test_downloads_zstd_tarball(self, dockerfile_template: str):
+        """Ollama switched Linux release from .tgz (404) to .tar.zst."""
+        assert "ollama-linux-amd64.tar.zst" in dockerfile_template
+        assert "ollama-linux-amd64.tgz" not in dockerfile_template
+
+    def test_extracts_with_zstd(self, dockerfile_template: str):
+        assert "tar --zstd" in dockerfile_template
+
+    def test_installs_zstd_package(self, dockerfile_template: str):
+        """Tar --zstd requires zstd to be installed in the Lambda base image."""
+        assert "zstd" in dockerfile_template
+
+    def test_uv_sync_does_not_install_stub_project(self, dockerfile_template: str):
+        """The generated pyproject is a stub; don't try to build it (Issue #3)."""
+        assert "--no-install-project" in dockerfile_template
+
+
 class TestGenerateZappaSettings:
     """Tests for _generate_zappa_settings function."""
 

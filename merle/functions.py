@@ -748,10 +748,6 @@ def prepare_deployment_files(  # noqa: PLR0915, PLR0912
     # Get template directory from installed package
     template_dir = Path(__file__).parent / "templates"
 
-    # Get consuming project root from current working directory
-    # (where the CLI is being run, not the installed package location)
-    consuming_project_root = Path.cwd()
-
     # Prepare replacements
     region = aws_region or REGION
     tags_dict = tags or {}
@@ -879,13 +875,14 @@ def prepare_deployment_files(  # noqa: PLR0915, PLR0912
         ephemeral_storage=ephemeral_storage,
     )
 
-    # Copy pyproject.toml from consuming project (where CLI is run)
-    pyproject_src = consuming_project_root / "pyproject.toml"
-    if pyproject_src.exists():
-        shutil.copy2(pyproject_src, model_cache_dir / "pyproject.toml")
-        logger.info(f"Copied pyproject.toml from consuming project: {consuming_project_root}")
-    else:
-        logger.warning(f"pyproject.toml not found in consuming project: {consuming_project_root}")
+    # Generate a minimal pyproject.toml for the deployment image.
+    # Copying the consumer's pyproject.toml pulled in unrelated deps and failed
+    # when the consumer declared a readme/build backend the image didn't ship.
+    generate_from_template(
+        template_path=template_dir / "pyproject.toml.template",
+        output_path=model_cache_dir / "pyproject.toml",
+        replacements={"PROJECT_NAME": sanitize_for_cloudformation(project_name)},
+    )
 
     # Note: We intentionally do NOT copy uv.lock or merle/ because:
     # 1. The Docker image may use a different architecture than the host
