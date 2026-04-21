@@ -313,7 +313,7 @@ class TestGenerateFromTemplate:
 class TestDockerfileTemplate:
     """Regression tests for the Dockerfile template (Issue #2)."""
 
-    @pytest.fixture
+    @pytest.fixture(scope="class")
     def dockerfile_template(self) -> str:
         template_path = Path(__file__).parent.parent / "merle" / "templates" / "Dockerfile.template"
         return template_path.read_text()
