@@ -64,6 +64,27 @@ else:
     logger.info("Ollama server initialized successfully")
 
 
+@app.before_request
+def require_api_key() -> tuple[dict[str, str], int] | None:
+    """
+    Enforce X-API-Key on every request when MERLE_REQUIRE_API_KEY is enabled.
+
+    The function-url topology exposes Lambda with AuthType=NONE, so the app itself
+    must validate the token. The apigw topology disables this gate because the
+    API Gateway authorizer already rejects unauthenticated traffic upstream.
+    """
+    if not settings.MERLE_REQUIRE_API_KEY:
+        return None
+    if not settings.API_KEY:
+        logger.error("MERLE_REQUIRE_API_KEY is set but API_KEY is not configured")
+        return {"error": "Server misconfigured"}, HTTPStatus.INTERNAL_SERVER_ERROR
+    provided = request.headers.get("X-API-Key", "")
+    if provided != settings.API_KEY:
+        logger.warning("Rejected request with missing or invalid X-API-Key")
+        return {"error": "Unauthorized"}, HTTPStatus.UNAUTHORIZED
+    return None
+
+
 @app.route("/health", methods=["GET"])
 def health_check() -> tuple[dict[str, Any], int]:
     """Health check endpoint."""
@@ -78,16 +99,41 @@ def health_check() -> tuple[dict[str, Any], int]:
     return {"status": "unhealthy", "error": "Internal error"}, HTTPStatus.SERVICE_UNAVAILABLE
 
 
-@app.route("/api/<path:path>", methods=["GET", "POST", "PUT", "DELETE"])
-def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:  # noqa: C901, PLR0911, PLR0912, PLR0915
-    """
-    Proxy all /api/* requests to Ollama server.
+def _validate_chat_context_window(data: Any) -> tuple[dict[str, Any], int] | None:  # noqa: ANN401
+    """Reject chat requests whose messages exceed the configured context window."""
+    if not (data and isinstance(data, dict) and "messages" in data):
+        return None
+    messages = data.get("messages", [])
+    if not messages:
+        return None
+    estimated_tokens = estimate_token_count(messages)
+    context_window_size = settings.OLLAMA_MODEL_CONTEXT_WINDOW_SIZE
+    logger.info(
+        f"Chat request validation - estimated tokens: {estimated_tokens}, context window: {context_window_size}"
+    )
+    if estimated_tokens > context_window_size:
+        error_msg = (
+            f"Request exceeds model context window. "
+            f"Estimated tokens: {estimated_tokens}, "
+            f"max context window: {context_window_size}. "
+            f"Please reduce the conversation history or message length."
+        )
+        logger.warning(error_msg)
+        return {
+            "error": error_msg,
+            "estimated_tokens": estimated_tokens,
+        }, HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+    return None
 
+
+def _proxy(target_url: str) -> Response | tuple[dict[str, str], int]:  # noqa: C901, PLR0911, PLR0912, PLR0915
+    """
+    Forward the current Flask request to `target_url` on the local Ollama server.
+
+    Shared by /api/* (Ollama-native) and /v1/* (OpenAI-compatible) proxies.
     Supports both streaming and non-streaming responses.
     """
     try:
-        target_url = f"{settings.OLLAMA_URL}/api/{path}"
-
         # Get request data
         data = None
         if request.method in ["POST", "PUT"]:
@@ -101,31 +147,6 @@ def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:  # noqa
             key: value for key, value in request.headers.items() if key.lower() not in ["host", "content-length"]
         }
 
-        # Validate context window size for chat requests
-        if path == "chat" and data and isinstance(data, dict) and "messages" in data:
-            messages = data.get("messages", [])
-            if messages:
-                estimated_tokens = estimate_token_count(messages)
-                context_window_size = settings.OLLAMA_MODEL_CONTEXT_WINDOW_SIZE
-
-                logger.info(
-                    f"Chat request validation - estimated tokens: {estimated_tokens}, "
-                    f"context window: {context_window_size}"
-                )
-
-                if estimated_tokens > context_window_size:
-                    error_msg = (
-                        f"Request exceeds model context window. "
-                        f"Estimated tokens: {estimated_tokens}, "
-                        f"max context window: {context_window_size}. "
-                        f"Please reduce the conversation history or message length."
-                    )
-                    logger.warning(error_msg)
-                    return {
-                        "error": error_msg,
-                        "estimated_tokens": estimated_tokens,
-                    }, HTTPStatus.REQUEST_ENTITY_TOO_LARGE
-
         logger.info(f"Proxying {request.method} request to {target_url}")
 
         # Check if client expects streaming response (from request body)
@@ -136,12 +157,10 @@ def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:  # noqa
         logger.info(f"Client requested streaming: {is_streaming_request}")
 
         # Use httpx streaming to get chunks as they arrive from Ollama
-        # This ensures we start sending response to API Gateway immediately
         client = httpx.Client(timeout=settings.OLLAMA_REQUEST_TIMEOUT)
 
         try:
             # Make streaming request to Ollama
-            logger.info(f"Creating stream request for {request.method}")
             if request.method == "GET":
                 stream_response = client.stream("GET", target_url, params=params, headers=headers)
             elif request.method == "POST":
@@ -154,12 +173,9 @@ def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:  # noqa
                 client.close()
                 return {"error": "Method not allowed"}, HTTPStatus.METHOD_NOT_ALLOWED
 
-            # Enter the streaming context
-            logger.info("Entering streaming context...")
             http_response = stream_response.__enter__()
             logger.info(f"Got response with status {http_response.status_code}")
 
-            # Check if response is streaming (chunked) or if client requested streaming
             content_type = http_response.headers.get("content-type", "")
             should_stream = is_streaming_request or "stream" in content_type or "ndjson" in content_type
 
@@ -168,10 +184,8 @@ def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:  # noqa
 
                 def generate():  # noqa: ANN202
                     try:
-                        # Stream chunks as they arrive from Ollama
                         yield from http_response.iter_bytes()
                     finally:
-                        # Cleanup: exit stream context and close client
                         stream_response.__exit__(None, None, None)
                         client.close()
 
@@ -181,7 +195,6 @@ def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:  # noqa
                     headers=dict(http_response.headers),
                 )
 
-            # Non-streaming response: read all content then cleanup
             content = http_response.read()
             response_headers = dict(http_response.headers)
             status_code = http_response.status_code
@@ -192,7 +205,6 @@ def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:  # noqa
             return Response(content, status=status_code, headers=response_headers)
 
         except Exception:  # noqa: BLE001
-            # Ensure client is closed on error
             with contextlib.suppress(Exception):
                 client.close()
             raise
@@ -208,6 +220,31 @@ def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:  # noqa
         return {"error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR
 
 
+@app.route("/api/<path:path>", methods=["GET", "POST", "PUT", "DELETE"])
+def proxy_to_ollama(path: str) -> Response | tuple[dict[str, str], int]:
+    """Proxy all /api/* requests to Ollama's native API."""
+    if path == "chat" and request.method in ["POST", "PUT"]:
+        rejection = _validate_chat_context_window(request.get_json(silent=True))
+        if rejection is not None:
+            return rejection
+    return _proxy(f"{settings.OLLAMA_URL}/api/{path}")
+
+
+@app.route("/v1/<path:path>", methods=["GET", "POST", "PUT", "DELETE"])
+def proxy_to_ollama_openai(path: str) -> Response | tuple[dict[str, str], int]:
+    """
+    Proxy /v1/* requests to Ollama's OpenAI-compatible surface.
+
+    Lets consumers point the `openai` SDK (or any OpenAI-compatible client) directly
+    at the merle deployment without a client-side adapter.
+    """
+    if path == "chat/completions" and request.method in ["POST", "PUT"]:
+        rejection = _validate_chat_context_window(request.get_json(silent=True))
+        if rejection is not None:
+            return rejection
+    return _proxy(f"{settings.OLLAMA_URL}/v1/{path}")
+
+
 @app.route("/", methods=["GET"])
 def root() -> tuple[dict[str, Any], int]:
     """Root endpoint with service information."""
@@ -217,7 +254,8 @@ def root() -> tuple[dict[str, Any], int]:
         "model": settings.OLLAMA_MODEL,
         "endpoints": {
             "/health": "Health check",
-            "/api/*": "Ollama API (proxied)",
+            "/api/*": "Ollama native API (proxied)",
+            "/v1/*": "OpenAI-compatible API (proxied)",
         },
     }, HTTPStatus.OK
 
@@ -225,7 +263,9 @@ def root() -> tuple[dict[str, Any], int]:
 @app.errorhandler(HTTPStatus.NOT_FOUND)
 def not_found(_error: HTTPException) -> tuple[dict[str, str], int]:
     """Handle 404 errors."""
-    return {"error": "Endpoint not found. Use /api/* for Ollama API."}, HTTPStatus.NOT_FOUND
+    return {
+        "error": "Endpoint not found. Use /api/* for Ollama native API or /v1/* for OpenAI-compatible API.",
+    }, HTTPStatus.NOT_FOUND
 
 
 @app.errorhandler(HTTPStatus.INTERNAL_SERVER_ERROR)

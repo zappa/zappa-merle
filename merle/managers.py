@@ -29,7 +29,13 @@ from merle.functions import (
     update_model_config,
     validate_ollama_model,
 )
-from merle.settings import REGION
+from merle.settings import (
+    DEFAULT_TOPOLOGY,
+    REGION,
+    TOPOLOGY_APIGW,
+    TOPOLOGY_FUNCTION_URL,
+    VALID_TOPOLOGIES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +82,17 @@ class DeploymentManager:
         project_name: str,
         stage: str = "dev",
         region: str | None = None,
+        topology: str = DEFAULT_TOPOLOGY,
     ) -> None:
+        if topology not in VALID_TOPOLOGIES:
+            error_msg = f"Invalid topology: {topology}. Must be one of {VALID_TOPOLOGIES}"
+            raise ValueError(error_msg)
         self.model_name = model_name
         self.cache_dir = cache_dir
         self.project_name = project_name
         self.stage = stage
         self.region = region or REGION
+        self.topology = topology
         self._model_cache_dir: Path | None = None
         self._ecr_image_uri: str | None = None
 
@@ -236,6 +247,7 @@ class DeploymentManager:
             context_window_size=context_window_size,
             use_split=use_split,
             split_config=split_metadata,
+            topology=self.topology,
         )
 
         logger.info(f"Successfully prepared deployment files in {self.model_cache_dir}")
@@ -389,7 +401,7 @@ class DeploymentManager:
             logger.info(f"Authorizer Lambda deployed: {response['FunctionArn']}")
             return response["FunctionArn"]
 
-    def _generate_zappa_settings(
+    def _generate_zappa_settings(  # noqa: C901, PLR0912
         self,
         auth_token: str,
         s3_bucket: str,
@@ -402,28 +414,13 @@ class DeploymentManager:
     ) -> None:
         """Generate zappa_settings.json using Zappa's Python API."""
         mode_str = " (split mode)" if use_split else ""
-        logger.info(f"Generating zappa_settings.json for stage '{self.stage}'{mode_str}")
+        logger.info(f"Generating zappa_settings.json for stage '{self.stage}' (topology: {self.topology}){mode_str}")
 
         cli = ZappaCLI()
         settings_dict = cli._generate_settings_dict(stage=self.stage, config_args=[])
 
         sanitized_project = sanitize_for_cloudformation(self.project_name)
         stage_config = settings_dict[self.stage]
-
-        # Configure authorizer - use ARN if provided (for Docker deployments)
-        if authorizer_arn:
-            authorizer_config = {
-                "arn": authorizer_arn,
-                "token_header": "X-API-Key",
-                "result_ttl": 300,
-            }
-        else:
-            # Fallback to function reference (for zip deployments)
-            authorizer_config = {
-                "function": "authorizer.lambda_handler",
-                "token_header": "X-API-Key",
-                "result_ttl": 300,
-            }
 
         # Build environment variables
         models_path = "/tmp/models"  # noqa: S108
@@ -443,6 +440,11 @@ class DeploymentManager:
             env_vars["MERLE_SPLIT_MODEL"] = "true"
             env_vars["OLLAMA_STARTUP_TIMEOUT"] = "300"
 
+        # Function URL topology moves auth into the Flask app; API Gateway's authorizer
+        # Lambda is not in the request path so the app must validate X-API-Key itself.
+        if self.topology == TOPOLOGY_FUNCTION_URL:
+            env_vars["MERLE_REQUIRE_API_KEY"] = "true"
+
         stage_config.update(
             {
                 "app_function": "merle.app.app",
@@ -455,13 +457,53 @@ class DeploymentManager:
                 "ephemeral_storage": {"Size": ephemeral_storage},
                 "keep_warm": False,
                 "keep_warm_expression": "rate(4 minutes)",
-                "authorizer": authorizer_config,
-                "cors": True,
-                "cors_allow_headers": ["Content-Type", "X-API-Key"],
                 "binary_support": False,
                 "tags": tags,
             }
         )
+
+        if self.topology == TOPOLOGY_APIGW:
+            # Configure authorizer - use ARN if provided (for Docker deployments)
+            if authorizer_arn:
+                authorizer_config = {
+                    "arn": authorizer_arn,
+                    "token_header": "X-API-Key",
+                    "result_ttl": 300,
+                }
+            else:
+                # Fallback to function reference (for zip deployments)
+                authorizer_config = {
+                    "function": "authorizer.lambda_handler",
+                    "token_header": "X-API-Key",
+                    "result_ttl": 300,
+                }
+            stage_config.update(
+                {
+                    "authorizer": authorizer_config,
+                    "cors": True,
+                    "cors_allow_headers": ["Content-Type", "X-API-Key"],
+                }
+            )
+        else:
+            # function-url: tell Zappa to skip API Gateway entirely and create a
+            # Lambda Function URL with AuthType=NONE. The app enforces the X-API-Key.
+            stage_config.update(
+                {
+                    "apigateway_enabled": False,
+                    "function_url_enabled": True,
+                    "function_url_config": {
+                        "authorizer": "NONE",
+                        "cors": {
+                            "allowedOrigins": ["*"],
+                            "allowedHeaders": ["Content-Type", "X-API-Key"],
+                            "allowedMethods": ["*"],
+                            "allowCredentials": False,
+                            "exposedResponseHeaders": ["*"],
+                            "maxAge": 0,
+                        },
+                    },
+                }
+            )
 
         if use_split:
             extra_permissions = [
@@ -653,7 +695,7 @@ class DeploymentManager:
 
         logger.info(f"Updated zappa_settings.json with authorizer ARN: {authorizer_arn}")
 
-    def deploy(self, auth_token: str, max_retries: int = 3, retry_delay: int = 15) -> str | None:
+    def deploy(self, auth_token: str, max_retries: int = 3, retry_delay: int = 15) -> str | None:  # noqa: PLR0912
         """
         Deploy to AWS Lambda using Zappa.
 
@@ -687,14 +729,19 @@ class DeploymentManager:
             raise RuntimeError("Docker image URI not found. Run build_and_push_docker_image() first.")
 
         # Deploy authorizer Lambda separately (required for Docker image deployments)
-        # Zappa doesn't automatically deploy the authorizer when using --docker-image-uri
-        logger.info("Deploying authorizer Lambda function...")
-        authorizer_role_arn = self._get_or_create_authorizer_role()
-        authorizer_arn = self._deploy_authorizer_lambda(image_uri, auth_token, authorizer_role_arn)
-        logger.info(f"Authorizer Lambda deployed: {authorizer_arn}")
+        # Zappa doesn't automatically deploy the authorizer when using --docker-image-uri.
+        # Function-URL topology validates X-API-Key in the Flask app, so the authorizer
+        # Lambda is not needed in that mode.
+        if self.topology == TOPOLOGY_APIGW:
+            logger.info("Deploying authorizer Lambda function...")
+            authorizer_role_arn = self._get_or_create_authorizer_role()
+            authorizer_arn = self._deploy_authorizer_lambda(image_uri, auth_token, authorizer_role_arn)
+            logger.info(f"Authorizer Lambda deployed: {authorizer_arn}")
 
-        # Update zappa settings with authorizer ARN
-        self._update_zappa_settings_with_authorizer(authorizer_arn)
+            # Update zappa settings with authorizer ARN
+            self._update_zappa_settings_with_authorizer(authorizer_arn)
+        else:
+            logger.info("Function-URL topology: skipping authorizer Lambda (auth handled in-app)")
 
         # Set environment for deployment; ensure zappa (installed alongside merle)
         # is resolvable even when merle was launched via its fully-qualified venv path.
@@ -770,6 +817,9 @@ class DeploymentManager:
             lambda_name = f"{project_name}-{self.stage}"
             aws_region = stage_config.get("aws_region", "us-east-1")
 
+            if self.topology == TOPOLOGY_FUNCTION_URL:
+                return self._get_function_url(lambda_name, aws_region)
+
             # Check if CloudFormation stack exists
             cf_client = boto3.client("cloudformation", region_name=aws_region)
             try:
@@ -791,6 +841,20 @@ class DeploymentManager:
         except Exception as e:  # noqa: BLE001
             logger.debug(f"Error getting deployment URL from Zappa: {e}")
             return None
+
+    def _get_function_url(self, function_name: str, aws_region: str) -> str | None:
+        """Fetch the Lambda Function URL for a deployed function."""
+        lambda_client = boto3.client("lambda", region_name=aws_region)
+        try:
+            response = lambda_client.list_function_url_configs(FunctionName=function_name, MaxItems=50)
+        except lambda_client.exceptions.ResourceNotFoundException:
+            logger.debug(f"Lambda function '{function_name}' not found")
+            return None
+        configs = response.get("FunctionUrlConfigs", [])
+        if not configs:
+            return None
+        # Trim trailing slash so clients can concatenate /api/... or /v1/... cleanly
+        return configs[0]["FunctionUrl"].rstrip("/")
 
     def destroy(self, skip_confirmation: bool = False) -> bool:
         """
@@ -824,9 +888,10 @@ class DeploymentManager:
         if not zappa_succeeded:
             logger.warning(f"Zappa undeploy returned exit code {result.returncode}")
 
-        # Clean up authorizer Lambda and IAM role
-        self._delete_authorizer_lambda()
-        self._delete_authorizer_role()
+        # Clean up authorizer Lambda and IAM role (only APIGW topology provisions them)
+        if self.topology == TOPOLOGY_APIGW:
+            self._delete_authorizer_lambda()
+            self._delete_authorizer_role()
 
         # Clean up local files
         self._cleanup_local_files()

@@ -273,3 +273,168 @@ class TestAppContextWindowValidation:
         assert response.status_code == 200
         data = json.loads(response.data)
         assert data["service"] == "merle-ollama-proxy"
+        # Root should advertise the OpenAI-compatible surface too
+        assert "/v1/*" in data["endpoints"]
+
+
+class TestV1Proxy:
+    """Tests for the OpenAI-compatible /v1/* proxy route."""
+
+    @pytest.fixture
+    def client(self):
+        """Create Flask test client."""
+        app.config["TESTING"] = True
+        with app.test_client() as client:
+            yield client
+
+    @pytest.fixture(autouse=True)
+    def mock_ollama_init(self):
+        """Mock Ollama initialization to avoid errors in tests."""
+        with patch("merle.app.get_or_initialize", return_value=True):
+            yield
+
+    def _mock_httpx(self, status_code: int = 200, body: bytes = b"{}"):
+        mock_response = MagicMock()
+        mock_response.status_code = status_code
+        mock_response.headers = {"content-type": "application/json"}
+        mock_response.read.return_value = body
+
+        mock_stream = MagicMock()
+        mock_stream.__enter__.return_value = mock_response
+        mock_stream.__exit__.return_value = None
+
+        mock_client_instance = MagicMock()
+        mock_client_instance.stream.return_value = mock_stream
+        mock_client_instance.close.return_value = None
+        return mock_client_instance, mock_response
+
+    def test_v1_chat_completions_proxies_to_ollama(self, client: MagicMock):
+        """POST /v1/chat/completions forwards to Ollama's OpenAI surface."""
+        mock_client, _ = self._mock_httpx(body=b'{"id":"chatcmpl-1"}')
+        with (
+            patch("merle.app.httpx.Client", return_value=mock_client),
+            patch("merle.app.settings.OLLAMA_URL", "http://localhost:11434"),
+            patch("merle.app.settings.OLLAMA_MODEL_CONTEXT_WINDOW_SIZE", 2048),
+        ):
+            response = client.post(
+                "/v1/chat/completions",
+                data=json.dumps(
+                    {
+                        "model": "llama2",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "stream": False,
+                    }
+                ),
+                content_type="application/json",
+            )
+        assert response.status_code == 200
+        # Confirm the proxy hit the /v1 surface on Ollama, not /api/*
+        call_args = mock_client.stream.call_args
+        assert call_args.args[1] == "http://localhost:11434/v1/chat/completions"
+
+    def test_v1_chat_completions_enforces_context_window(self, client: MagicMock):
+        """Oversized /v1/chat/completions requests are rejected with 413."""
+        with patch("merle.app.settings.OLLAMA_MODEL_CONTEXT_WINDOW_SIZE", 10):
+            response = client.post(
+                "/v1/chat/completions",
+                data=json.dumps(
+                    {
+                        "model": "llama2",
+                        "messages": [{"role": "user", "content": "a" * 1000}],
+                    }
+                ),
+                content_type="application/json",
+            )
+        assert response.status_code == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+        data = json.loads(response.data)
+        assert "exceeds model context window" in data["error"].lower()
+
+    def test_v1_models_proxies_get(self, client: MagicMock):
+        """GET /v1/models forwards to Ollama's OpenAI surface."""
+        mock_client, _ = self._mock_httpx(body=b'{"data":[]}')
+        with (
+            patch("merle.app.httpx.Client", return_value=mock_client),
+            patch("merle.app.settings.OLLAMA_URL", "http://localhost:11434"),
+        ):
+            response = client.get("/v1/models")
+        assert response.status_code == 200
+        call_args = mock_client.stream.call_args
+        assert call_args.args[0] == "GET"
+        assert call_args.args[1] == "http://localhost:11434/v1/models"
+
+    def test_not_found_message_mentions_both_surfaces(self, client: MagicMock):
+        """404 text should point users at both /api/* and /v1/*."""
+        response = client.get("/does-not-exist")
+        assert response.status_code == 404
+        data = json.loads(response.data)
+        assert "/api/*" in data["error"]
+        assert "/v1/*" in data["error"]
+
+
+class TestApiKeyGate:
+    """Tests for the app-level X-API-Key @before_request hook."""
+
+    @pytest.fixture
+    def client(self):
+        """Create Flask test client."""
+        app.config["TESTING"] = True
+        with app.test_client() as client:
+            yield client
+
+    @pytest.fixture(autouse=True)
+    def mock_ollama_init(self):
+        """Mock Ollama initialization to avoid errors in tests."""
+        with patch("merle.app.get_or_initialize", return_value=True):
+            yield
+
+    def test_gate_disabled_by_default(self, client: MagicMock):
+        """When MERLE_REQUIRE_API_KEY is false the gate is inert and /health is reachable."""
+        with (
+            patch("merle.app.settings.MERLE_REQUIRE_API_KEY", False),
+            patch("merle.app.httpx.get") as mock_get,
+        ):
+            mock_get.return_value.status_code = 200
+            response = client.get("/health")
+        assert response.status_code == 200
+
+    def test_gate_rejects_missing_key(self, client: MagicMock):
+        """With gate enabled, requests without X-API-Key get 401."""
+        with (
+            patch("merle.app.settings.MERLE_REQUIRE_API_KEY", True),
+            patch("merle.app.settings.API_KEY", "secret-token"),
+        ):
+            response = client.get("/health")
+        assert response.status_code == HTTPStatus.UNAUTHORIZED
+        data = json.loads(response.data)
+        assert data["error"] == "Unauthorized"
+
+    def test_gate_rejects_wrong_key(self, client: MagicMock):
+        """With gate enabled, requests with a wrong X-API-Key get 401."""
+        with (
+            patch("merle.app.settings.MERLE_REQUIRE_API_KEY", True),
+            patch("merle.app.settings.API_KEY", "secret-token"),
+        ):
+            response = client.get("/health", headers={"X-API-Key": "wrong"})
+        assert response.status_code == HTTPStatus.UNAUTHORIZED
+
+    def test_gate_accepts_correct_key(self, client: MagicMock):
+        """With gate enabled, correct X-API-Key lets the request through."""
+        with (
+            patch("merle.app.settings.MERLE_REQUIRE_API_KEY", True),
+            patch("merle.app.settings.API_KEY", "secret-token"),
+            patch("merle.app.httpx.get") as mock_get,
+        ):
+            mock_get.return_value.status_code = 200
+            response = client.get("/health", headers={"X-API-Key": "secret-token"})
+        assert response.status_code == 200
+
+    def test_gate_errors_when_api_key_unset(self, client: MagicMock):
+        """With gate enabled but API_KEY missing, the server signals misconfiguration."""
+        with (
+            patch("merle.app.settings.MERLE_REQUIRE_API_KEY", True),
+            patch("merle.app.settings.API_KEY", None),
+        ):
+            response = client.get("/health", headers={"X-API-Key": "anything"})
+        assert response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
+        data = json.loads(response.data)
+        assert data["error"] == "Server misconfigured"

@@ -20,11 +20,13 @@ from merle.functions import (
 )
 from merle.managers import DeploymentManager
 from merle.settings import (
+    DEFAULT_TOPOLOGY,
     LAMBDA_MEMORY_SIZE_DEFAULT,
     LAMBDA_MEMORY_SIZE_MAX,
     LAMBDA_MEMORY_SIZE_MIN,
     REGION,
     STAGE,
+    VALID_TOPOLOGIES,
     validate_lambda_memory_size,
 )
 
@@ -194,6 +196,24 @@ def handle_prepare_dockerfile(args: argparse.Namespace) -> int:  # noqa: C901, P
                 print(f"Error: {e}", file=sys.stderr)
                 return 1
 
+        # Load existing configuration to check for existing values
+        config = load_config(cache_dir)
+        existing_model_config = config.get("models", {}).get(args.model, {}).get(stage, {})
+        existing_auth_token = existing_model_config.get("auth_token")
+        existing_topology = existing_model_config.get("topology")
+
+        topology = getattr(args, "topology", DEFAULT_TOPOLOGY)
+        if existing_topology and existing_topology != topology:
+            error_msg = (
+                f"Cannot change topology for existing deployment.\n"
+                f"Current topology: {existing_topology}\n"
+                f"Requested topology: {topology}\n"
+                f"To switch topology, first destroy the deployment with: merle destroy --model {args.model}"
+            )
+            logger.error(error_msg)
+            print(f"Error: {error_msg}", file=sys.stderr)
+            return 1
+
         # Create DeploymentManager
         manager = DeploymentManager(
             model_name=args.model,
@@ -201,12 +221,8 @@ def handle_prepare_dockerfile(args: argparse.Namespace) -> int:  # noqa: C901, P
             project_name=get_effective_project_name(args),
             stage=stage,
             region=args.region,
+            topology=topology,
         )
-
-        # Load existing configuration to check for existing values
-        config = load_config(cache_dir)
-        existing_model_config = config.get("models", {}).get(args.model, {}).get(stage, {})
-        existing_auth_token = existing_model_config.get("auth_token")
 
         # Check if zappa_settings.json already exists
         existing_s3_bucket = None
@@ -329,6 +345,13 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
 
         logger.info(f"Deploying model: {model_name}")
 
+        # Resolve topology: CLI flag wins; otherwise fall back to persisted value,
+        # otherwise the default. This lets `deploy` work both when prepare-dockerfile
+        # set the topology earlier and when deploy auto-prepares from scratch.
+        config_preview = load_config(cache_dir)
+        persisted_topology = config_preview.get("models", {}).get(model_name, {}).get(stage, {}).get("topology")
+        topology = getattr(args, "topology", None) or persisted_topology or DEFAULT_TOPOLOGY
+
         # Create DeploymentManager
         manager = DeploymentManager(
             model_name=model_name,
@@ -336,6 +359,7 @@ def handle_deploy(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
             project_name=get_effective_project_name(args),
             stage=stage,
             region=args.region,
+            topology=topology,
         )
 
         # Check if preparation is needed
@@ -526,6 +550,7 @@ def handle_list(args: argparse.Namespace) -> int:  # noqa: PLR0912, C901
                 cache_dir=cache_dir,
                 project_name=get_effective_project_name(args),
                 stage=stage,
+                topology=model_config.get("topology", DEFAULT_TOPOLOGY),
             )
 
             # Check if deployment files exist
@@ -624,12 +649,19 @@ def handle_destroy(args: argparse.Namespace) -> int:  # noqa: C901
         stage = args.stage
         logger.info(f"Destroying deployment for model: {model_name}, stage: {stage}")
 
+        # Read topology from config so destroy knows whether to clean up the authorizer
+        config = load_config(cache_dir)
+        persisted_topology = (
+            config.get("models", {}).get(model_name, {}).get(stage, {}).get("topology", DEFAULT_TOPOLOGY)
+        )
+
         # Create DeploymentManager
         manager = DeploymentManager(
             model_name=model_name,
             cache_dir=cache_dir,
             project_name=get_effective_project_name(args),
             stage=stage,
+            topology=persisted_topology,
         )
 
         if not manager.is_prepared:
@@ -703,12 +735,20 @@ def handle_chat(args: argparse.Namespace) -> int:
         stage = args.stage
         logger.info(f"Connecting to model: {model_name}, stage: {stage}")
 
+        # Read topology from config so chat resolves the deployment URL correctly
+        # (function-url vs APIGW go through different lookup paths).
+        config_preview = load_config(cache_dir)
+        persisted_topology = (
+            config_preview.get("models", {}).get(model_name, {}).get(stage, {}).get("topology", DEFAULT_TOPOLOGY)
+        )
+
         # Create DeploymentManager
         manager = DeploymentManager(
             model_name=model_name,
             cache_dir=cache_dir,
             project_name=get_effective_project_name(args),
             stage=stage,
+            topology=persisted_topology,
         )
 
         if not manager.is_prepared:
@@ -863,6 +903,16 @@ def main() -> int:
         "--project",
         help="Project name to prefix cache directory (allows multiple projects to share the same base cache)",
     )
+    prepare_parser.add_argument(
+        "--topology",
+        choices=VALID_TOPOLOGIES,
+        default=DEFAULT_TOPOLOGY,
+        help=(
+            f"Deployment topology (default: {DEFAULT_TOPOLOGY}). "
+            f"'apigw' uses API Gateway REST (29s integration timeout). "
+            f"'function-url' uses a Lambda Function URL (15min Lambda timeout; auth in-app via X-API-Key)."
+        ),
+    )
     prepare_parser.set_defaults(func=handle_prepare_dockerfile)
 
     # deploy command
@@ -914,6 +964,16 @@ def main() -> int:
     deploy_parser.add_argument(
         "--project",
         help="Project name to prefix cache directory (allows multiple projects to share the same base cache)",
+    )
+    deploy_parser.add_argument(
+        "--topology",
+        choices=VALID_TOPOLOGIES,
+        default=None,
+        help=(
+            "Deployment topology. If omitted, uses the value persisted from prepare. "
+            "'apigw' (default) uses API Gateway REST (29s integration timeout). "
+            "'function-url' uses a Lambda Function URL (15min Lambda timeout; auth in-app via X-API-Key)."
+        ),
     )
     deploy_parser.set_defaults(func=handle_deploy)
 

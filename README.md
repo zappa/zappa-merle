@@ -48,6 +48,59 @@ export AWS_DEFAULT_REGION=us-east-1
 
 **Note:** The region must be specified during `prepare` step as it's embedded in the deployment configuration.
 
+### Deployment topology (`--topology`)
+
+merle supports two deployment topologies. Pick one with `--topology` at `prepare` / `deploy` time.
+
+| Topology | Max request duration | Auth layer | When to pick it |
+| --- | --- | --- | --- |
+| `apigw` (default) | **29 seconds** (API Gateway REST integration cap; cannot be raised) | API Gateway custom authorizer Lambda validates `X-API-Key` before the request reaches Lambda | Small models whose warm end-to-end latency is well under 29s (e.g. `tinyllama`, tiny quantised 1B models). |
+| `function-url` | Up to Lambda's configured `timeout_seconds` (15 min max) | Lambda Function URL with `AuthType=NONE`; the Flask app validates `X-API-Key` via a `before_request` hook | Anything that can't finish in 29s on CPU — basically every real-world model, including `schroneko/gemma-2-2b-jpn-it`, `llama3.2`, `mistral`, and larger. |
+
+> **WARNING — 29s ceiling on `apigw`:** API Gateway REST has a hard 29-second integration timeout that AWS does not let you raise. If cold-start + model-load + first-token exceeds 29s the client gets `HTTP 504 "Endpoint request timed out"` even though the Lambda itself finishes the request (visible in CloudWatch). Streaming does not help — API Gateway buffers before flushing. For CPU inference on anything larger than toy models, choose `--topology function-url`.
+
+#### Function URL example
+
+```bash
+# Prepare + deploy with a Function URL (no API Gateway)
+uvx merle prepare --model schroneko/gemma-2-2b-jpn-it --topology function-url
+uvx merle deploy --model schroneko/gemma-2-2b-jpn-it
+
+# Subsequent chat uses the Function URL automatically
+uvx merle chat --model schroneko/gemma-2-2b-jpn-it
+```
+
+Under `function-url`, merle sets `MERLE_REQUIRE_API_KEY=true` on the Lambda. The Flask app in the container enforces `X-API-Key` on **every** route (including `/health` and `/`), matching the behaviour of the API Gateway authorizer in `apigw` mode. The authorizer Lambda and its IAM role are **not** provisioned in `function-url` mode.
+
+To switch an existing deployment between topologies, destroy it first:
+
+```bash
+uvx merle destroy --model {MODEL}
+uvx merle prepare --model {MODEL} --topology function-url
+uvx merle deploy --model {MODEL}
+```
+
+### OpenAI-compatible clients
+
+merle proxies both Ollama's native API (`/api/*`) and Ollama's OpenAI-compatible surface (`/v1/*`). OpenAI SDK users can point at the merle deployment URL directly:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://<function-url-or-apigw-url>/v1",
+    api_key="<the X-API-Key you set at prepare time>",
+    default_headers={"X-API-Key": "<same token>"},
+)
+
+reply = client.chat.completions.create(
+    model="schroneko/gemma-2-2b-jpn-it",
+    messages=[{"role": "user", "content": "こんにちは"}],
+)
+```
+
+Note: the OpenAI SDK sends the token as `Authorization: Bearer ...`, but merle's authorizer and in-app gate read `X-API-Key`. Pass the token in `default_headers` as shown, or set `X-API-Key` on each request.
+
 ### Using uvx (Recommended)
 
 You can run `merle` without installing it using [uvx](https://docs.astral.sh/uv/guides/tools/), which executes the CLI in an isolated environment:

@@ -396,6 +396,7 @@ def update_model_config(  # noqa: C901, PLR0912
     context_window_size: int | None = None,
     use_split: bool | None = None,
     split_config: dict | None = None,
+    topology: str | None = None,
 ) -> None:
     """
     Update the configuration for a specific model-stage combination.
@@ -412,6 +413,7 @@ def update_model_config(  # noqa: C901, PLR0912
         context_window_size: Optional context window size in tokens
         use_split: Optional flag indicating if split model mode is used
         split_config: Optional split model configuration dict
+        topology: Optional deployment topology ('apigw' or 'function-url')
     """
     config = load_config(cache_dir)
     normalized_name = normalize_model_name(model_name)
@@ -444,6 +446,8 @@ def update_model_config(  # noqa: C901, PLR0912
         model_config["use_split"] = use_split
     if split_config is not None:
         model_config["split"] = split_config
+    if topology is not None:
+        model_config["topology"] = topology
 
     save_config(cache_dir, config)
     logger.info(f"Updated configuration for model: {model_name}, stage: {stage}")
