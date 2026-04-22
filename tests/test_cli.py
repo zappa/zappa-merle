@@ -937,3 +937,102 @@ class TestHandleChat:
         result = handle_chat(args)
 
         assert result == 1
+
+
+class TestTopologyOption:
+    """CLI-level tests for the --topology flag added for issue #5."""
+
+    def test_parser_rejects_unknown_topology(self):
+        """Argparse should reject topology values outside the choices list."""
+        from merle.cli import main  # noqa: PLC0415
+
+        with (
+            patch("sys.argv", ["merle", "prepare", "--model", "llama2", "--topology", "ec2"]),
+            pytest.raises(SystemExit),
+        ):
+            main()
+
+    @patch("merle.managers.DeploymentManager.prepare")
+    @patch("merle.cli.generate_unique_bucket_name")
+    @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
+    def test_prepare_propagates_topology_to_manager(
+        self,
+        mock_get_default_project: MagicMock,
+        mock_get_config: MagicMock,
+        mock_gen_bucket: MagicMock,
+        mock_prepare: MagicMock,
+        temp_cache_dir: Path,
+    ):
+        """handle_prepare_dockerfile should construct a DeploymentManager with the passed topology."""
+        mock_get_config.return_value = temp_cache_dir
+        mock_gen_bucket.return_value = "zappa-merle-deadbeef"
+        mock_prepare.return_value = temp_cache_dir / "testproject" / "dev" / "llama2"
+        mock_get_default_project.return_value = "testproject"
+
+        args = argparse.Namespace(
+            model="llama2",
+            auth_token="tok",
+            region="us-east-1",
+            cache_dir=None,
+            tags=None,
+            s3_bucket=None,
+            stage="dev",
+            memory_size=8192,
+            project=None,
+            topology="function-url",
+        )
+
+        with patch("merle.cli.DeploymentManager") as mock_manager_cls:
+            instance = MagicMock()
+            instance.is_prepared = False
+            instance.prepare.return_value = mock_prepare.return_value
+            mock_manager_cls.return_value = instance
+            result = handle_prepare_dockerfile(args)
+
+        assert result == 0
+        _, kwargs = mock_manager_cls.call_args
+        assert kwargs["topology"] == "function-url"
+
+    @patch("merle.cli.get_config_directory")
+    @patch("merle.cli.get_default_project_name")
+    def test_prepare_rejects_topology_change_on_existing_deployment(
+        self,
+        mock_get_default_project: MagicMock,
+        mock_get_config: MagicMock,
+        temp_cache_dir: Path,
+    ):
+        """Switching topology on an already-configured deployment must error out."""
+        mock_get_config.return_value = temp_cache_dir
+        mock_get_default_project.return_value = "testproject"
+
+        # Seed config with an existing apigw deployment for this model+stage
+        project_cache = temp_cache_dir / "testproject"
+        project_cache.mkdir(parents=True, exist_ok=True)
+        (project_cache / "config.json").write_text(
+            json.dumps(
+                {
+                    "models": {
+                        "llama2": {
+                            "dev": {"topology": "apigw", "auth_token": "existing"},
+                        }
+                    }
+                }
+            )
+        )
+
+        args = argparse.Namespace(
+            model="llama2",
+            auth_token=None,
+            region="us-east-1",
+            cache_dir=None,
+            tags=None,
+            s3_bucket=None,
+            stage="dev",
+            memory_size=8192,
+            project="testproject",
+            topology="function-url",
+        )
+
+        result = handle_prepare_dockerfile(args)
+        assert result == 1

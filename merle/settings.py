@@ -45,6 +45,16 @@ LAMBDA_MEMORY_SIZE_MIN = 128  # MB - AWS Lambda minimum
 LAMBDA_MEMORY_SIZE_MAX = 10240  # MB (10 GB) - AWS Lambda maximum
 LAMBDA_MEMORY_SIZE_DEFAULT = 8192  # MB (8 GB) - Default memory allocation for 7B models
 
+# Deployment Topology
+TOPOLOGY_APIGW = "apigw"
+TOPOLOGY_FUNCTION_URL = "function-url"
+VALID_TOPOLOGIES = (TOPOLOGY_APIGW, TOPOLOGY_FUNCTION_URL)
+DEFAULT_TOPOLOGY = TOPOLOGY_APIGW
+
+# Application-level API key gate (used when Lambda is exposed via Function URL with AuthType=NONE)
+API_KEY = os.getenv("API_KEY")
+MERLE_REQUIRE_API_KEY = os.getenv("MERLE_REQUIRE_API_KEY", "false").lower() == "true"
+
 
 def get_models_path() -> Path:
     """Get the models directory as a Path object."""

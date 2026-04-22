@@ -409,3 +409,179 @@ class TestCleanupLocalFiles:
 
         prepared_manager._cleanup_local_files()
         assert not cache_dir.exists()
+
+
+class TestTopology:
+    """Tests for the --topology (apigw / function-url) feature covering issue #5."""
+
+    def test_invalid_topology_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="Invalid topology"):
+            DeploymentManager(
+                model_name="llama2",
+                cache_dir=tmp_path,
+                project_name="proj",
+                topology="elb",
+            )
+
+    def test_function_url_manager_exposes_topology(self, tmp_path):
+        mgr = DeploymentManager(
+            model_name="llama2",
+            cache_dir=tmp_path,
+            project_name="proj",
+            topology="function-url",
+        )
+        assert mgr.topology == "function-url"
+
+    @patch("merle.managers.ZappaCLI")
+    def test_apigw_settings_include_authorizer_and_omit_function_url(self, mock_zappa_cli_cls, tmp_path):
+        mock_cli = MagicMock()
+        mock_cli._generate_settings_dict.return_value = {"dev": {}}
+        mock_zappa_cli_cls.return_value = mock_cli
+
+        mgr = DeploymentManager(
+            model_name="llama2",
+            cache_dir=tmp_path,
+            project_name="proj",
+            stage="dev",
+            topology="apigw",
+        )
+        mgr.model_cache_dir.mkdir(parents=True, exist_ok=True)
+        mgr._generate_zappa_settings(auth_token="tok", s3_bucket="bkt", tags={})
+
+        settings = json.loads(mgr.zappa_settings_path.read_text())
+        stage = settings["dev"]
+        assert "authorizer" in stage
+        assert stage["cors"] is True
+        assert "X-API-Key" in stage["cors_allow_headers"]
+        assert "apigateway_enabled" not in stage  # default: APIGW stays enabled
+        assert "function_url_enabled" not in stage
+        assert "MERLE_REQUIRE_API_KEY" not in stage["environment_variables"]
+
+    @patch("merle.managers.ZappaCLI")
+    def test_function_url_settings_suppress_apigw_and_enable_function_url(self, mock_zappa_cli_cls, tmp_path):
+        mock_cli = MagicMock()
+        mock_cli._generate_settings_dict.return_value = {"dev": {}}
+        mock_zappa_cli_cls.return_value = mock_cli
+
+        mgr = DeploymentManager(
+            model_name="llama2",
+            cache_dir=tmp_path,
+            project_name="proj",
+            stage="dev",
+            topology="function-url",
+        )
+        mgr.model_cache_dir.mkdir(parents=True, exist_ok=True)
+        mgr._generate_zappa_settings(auth_token="tok", s3_bucket="bkt", tags={})
+
+        settings = json.loads(mgr.zappa_settings_path.read_text())
+        stage = settings["dev"]
+        assert stage["apigateway_enabled"] is False
+        assert stage["function_url_enabled"] is True
+        assert stage["function_url_config"]["authorizer"] == "NONE"
+        # App-level gate is what keeps the Function URL safe
+        assert stage["environment_variables"]["MERLE_REQUIRE_API_KEY"] == "true"
+        # Authorizer / CORS APIGW bits must not leak into function-url settings
+        assert "authorizer" not in stage
+        assert "cors" not in stage
+        assert "cors_allow_headers" not in stage
+
+    @patch("merle.managers.subprocess.run")
+    @patch("merle.managers.boto3.client")
+    @patch.object(DeploymentManager, "_get_or_create_authorizer_role")
+    @patch.object(DeploymentManager, "_deploy_authorizer_lambda")
+    @patch.object(DeploymentManager, "_update_zappa_settings_with_authorizer")
+    @patch.object(
+        DeploymentManager,
+        "get_deployment_url",
+        return_value="https://abcd.lambda-url.us-east-1.on.aws",
+    )
+    @patch("merle.managers.update_model_config")
+    def test_function_url_deploy_skips_authorizer_wiring(
+        self,
+        mock_update_config,
+        mock_get_url,
+        mock_update_auth_settings,
+        mock_deploy_auth,
+        mock_create_role,
+        mock_boto,
+        mock_run,
+        tmp_path,
+    ):
+        mgr = DeploymentManager(
+            model_name="llama2",
+            cache_dir=tmp_path,
+            project_name="proj",
+            stage="dev",
+            topology="function-url",
+        )
+        mgr.model_cache_dir.mkdir(parents=True, exist_ok=True)
+        settings = {
+            "dev": {
+                "project_name": "proj",
+                "aws_region": "us-east-1",
+                "docker_image_uri": "123.dkr.ecr.us-east-1.amazonaws.com/merle-llama2:latest",
+            }
+        }
+        mgr.zappa_settings_path.write_text(json.dumps(settings))
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        url = mgr.deploy(auth_token="tok")
+
+        assert url == "https://abcd.lambda-url.us-east-1.on.aws"
+        mock_create_role.assert_not_called()
+        mock_deploy_auth.assert_not_called()
+        mock_update_auth_settings.assert_not_called()
+
+    @patch("merle.managers.subprocess.run")
+    @patch.object(DeploymentManager, "_delete_authorizer_lambda")
+    @patch.object(DeploymentManager, "_delete_authorizer_role")
+    @patch.object(DeploymentManager, "_cleanup_local_files")
+    def test_function_url_destroy_skips_authorizer_cleanup(
+        self,
+        mock_cleanup,
+        mock_del_role,
+        mock_del_lambda,
+        mock_run,
+        tmp_path,
+    ):
+        mgr = DeploymentManager(
+            model_name="llama2",
+            cache_dir=tmp_path,
+            project_name="proj",
+            stage="dev",
+            topology="function-url",
+        )
+        mgr.model_cache_dir.mkdir(parents=True, exist_ok=True)
+        mgr.zappa_settings_path.write_text(json.dumps({"dev": {}}))
+        mock_run.return_value = MagicMock(returncode=0)
+
+        assert mgr.destroy() is True
+        mock_del_lambda.assert_not_called()
+        mock_del_role.assert_not_called()
+        mock_cleanup.assert_called_once()
+
+    @patch("merle.managers.boto3.client")
+    def test_function_url_get_deployment_url_reads_from_lambda(self, mock_boto_client, tmp_path):
+        lambda_client = MagicMock()
+        lambda_client.exceptions = MagicMock()
+        lambda_client.exceptions.ResourceNotFoundException = type("NotFound", (Exception,), {})
+        lambda_client.list_function_url_configs.return_value = {
+            "FunctionUrlConfigs": [
+                {"FunctionUrl": "https://abcd.lambda-url.us-east-1.on.aws/"},
+            ]
+        }
+        mock_boto_client.return_value = lambda_client
+
+        mgr = DeploymentManager(
+            model_name="llama2",
+            cache_dir=tmp_path,
+            project_name="proj",
+            stage="dev",
+            topology="function-url",
+        )
+        mgr.model_cache_dir.mkdir(parents=True, exist_ok=True)
+        mgr.zappa_settings_path.write_text(json.dumps({"dev": {"project_name": "proj", "aws_region": "us-east-1"}}))
+
+        url = mgr.get_deployment_url()
+        assert url == "https://abcd.lambda-url.us-east-1.on.aws"
+        lambda_client.list_function_url_configs.assert_called_once_with(FunctionName="proj-dev", MaxItems=50)
