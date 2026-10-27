@@ -338,7 +338,7 @@ dev = [
 requires-dist = [
     { name = "flask", specifier = ">=3.1.0,<3.2.0" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "zappa", specifier = ">=0.61.2,<0.63" },
+    { name = "zappa", specifier = ">=0.63.0,<0.64" },
 ]
 
 [package.metadata.requires-dev]
@@ -679,7 +679,7 @@ wheels = [
 
 [[package]]
 name = "zappa"
-version = "0.61.2"
+version = "0.63.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -700,7 +700,7 @@ dependencies = [
     { name = "werkzeug" },
     { name = "wheel" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7e/6c/98d2c38c12f9acb78fccfd4700098200554e03cc227fd97f0475838cd02b/zappa-0.61.2.tar.gz", hash = "sha256:2dec2e9e457e989cb8c9277e5ace738b3a1277724845aa40e0d571145dcc7b33", size = 230016, upload-time = "2025-12-10T09:54:05.614Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3a/e2/68386cdb8f99dbddfa56f2d087f417966c6612b448b215b1a05f2b1b0599/zappa-0.63.0.tar.gz", hash = "sha256:1ab6e245ae22bb5998b6083b5c15ccab023615b012c3c7f4c6a08a62cef37c5d", size = 278428, upload-time = "2026-10-08T22:50:36.506Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a8/0e/c04d1d1ac913c4db52d4ff9a09c20fdc9fa3802f0f2c49f1454201bd0932/zappa-0.61.2-py3-none-any.whl", hash = "sha256:7ab472a08b540b28c77bf85ad0184d2ddc79abb1eaf54b7eebd400eb8740381c", size = 131971, upload-time = "2025-12-10T09:54:03.856Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/d6/dc748d4b304fac9a70df9dc501f62590dd16ccb4375bbcefa76e15d23f59/zappa-0.63.0-py3-none-any.whl", hash = "sha256:22c7227625d30240895bad631ec04e9935e379462f26333441e3cdd6866cc108", size = 153262, upload-time = "2026-10-08T22:50:34.658Z" },
 ]
