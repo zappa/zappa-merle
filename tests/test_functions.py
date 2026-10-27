@@ -334,6 +334,11 @@ class TestDockerfileTemplate:
         """The generated pyproject is a stub; don't try to build it (Issue #3)."""
         assert "--no-install-project" in dockerfile_template
 
+    def test_settings_file_uses_deploy_stage(self, dockerfile_template: str):
+        """zappa_settings.json only defines the deploy stage; a hard-coded "dev" breaks --stage prd builds."""
+        assert "save-python-settings-file {{ZAPPA_STAGE}}" in dockerfile_template
+        assert "save-python-settings-file dev" not in dockerfile_template
+
 
 class TestGenerateZappaSettings:
     """Tests for _generate_zappa_settings function."""

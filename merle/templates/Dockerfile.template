@@ -53,7 +53,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Copy authorizer and Zappa settings JSON
 COPY authorizer.py ${FUNCTION_DIR}/
 COPY zappa_settings.json ${FUNCTION_DIR}/
-RUN uv run zappa save-python-settings-file dev -o ${FUNCTION_DIR}/zappa_settings.py
+RUN uv run zappa save-python-settings-file {{ZAPPA_STAGE}} -o ${FUNCTION_DIR}/zappa_settings.py
 
 # Copy the pre-prepared model files
 COPY models/ /var/task/models/

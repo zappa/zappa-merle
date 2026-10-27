@@ -174,6 +174,7 @@ class DeploymentManager:
             "AWS_REGION": self.region,
             "AUTH_TOKEN": auth_token,
             "TAGS_JSON": json.dumps(tags_dict),
+            "ZAPPA_STAGE": self.stage,
         }
 
         # Determine if we need to download and potentially split the model
